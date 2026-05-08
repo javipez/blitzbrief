@@ -331,19 +331,41 @@ def _fetch_page(url: str) -> tuple[Optional[str], Optional[str]]:
     Si todo va bien: (html, None).
     Si falla:        (None, descripción del error).
 
-    Para elpais.com usa una sesión persistente con warmup en la portada,
-    porque su anti-bot exige cookies de sesión válidas.
+    Para elpais.com (no feeds.elpais.com) usa sesión persistente con
+    warmup, jitter entre peticiones y un reintento en caso de 403,
+    porque su anti-bot rate-limitea peticiones rápidas seguidas.
     """
-    if "elpais.com" in url:
+    # feeds.elpais.com va por la ruta normal; solo el dominio principal
+    # tiene el anti-bot agresivo.
+    needs_session = (
+        url.startswith("https://elpais.com/")
+        or url.startswith("http://elpais.com/")
+    )
+    if needs_session:
         session = _get_elpais_session()
         _warmup_elpais(session)
-        try:
-            resp = session.get(url, timeout=15)
-            resp.raise_for_status()
-            return resp.text, None
-        except Exception as e:
-            log.warning(f"Error al descargar {url}: {e}")
-            return None, str(e)
+        # Jitter entre 1-2.5s para parecer navegación humana y evitar
+        # que el anti-bot nos rate-limitee tras varias peticiones
+        # rápidas seguidas.
+        time.sleep(1.0 + random.random() * 1.5)
+        for attempt in range(2):
+            try:
+                resp = session.get(url, timeout=15)
+                resp.raise_for_status()
+                return resp.text, None
+            except Exception as e:
+                err_str = str(e)
+                # Reintento único en 403 con espera más larga: a veces
+                # el servidor "perdona" tras una pausa.
+                if attempt == 0 and "403" in err_str:
+                    log.info(
+                        f"403 en {url}, reintentando en 4-6s..."
+                    )
+                    time.sleep(4.0 + random.random() * 2.0)
+                    continue
+                log.warning(f"Error al descargar {url}: {err_str}")
+                return None, err_str
+        return None, "Reintentos agotados"
 
     try:
         resp = requests.get(url, headers=BROWSER_HEADERS, timeout=15)
