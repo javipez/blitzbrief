@@ -380,51 +380,79 @@ def _fetch_page(url: str) -> tuple[Optional[str], Optional[str]]:
 
 
 def fetch_elpais_articles(
-    author_name: str, slug: str, cutoff: datetime, errors: Optional[list] = None
+    author_name: str, cutoff: datetime, errors: Optional[list] = None
 ) -> list[dict]:
-    """Extrae artículos recientes de la página de autor de El País."""
-    url = f"https://elpais.com/autor/{slug}/"
-    html, err = _fetch_page(url)
-    if not html:
+    """Extrae artículos recientes de un autor de El País vía Google News.
+
+    Hemos abandonado el scrapeo directo de elpais.com/autor/<slug>/ porque
+    su anti-bot lo bloquea con 403 (rate-limit + TLS fingerprint). Google
+    News indexa El País a las pocas horas y devuelve un RSS estable y
+    sin protección.
+
+    Limitación: la URL que entrega Google News no es siempre la URL
+    original de elpais.com (a partir de 2024 las codifica). Si no
+    podemos extraerla, usamos la de Google News tal cual; abre bien en
+    el navegador (redirige al artículo original).
+    """
+    import urllib.parse
+    query = f'"{author_name}" site:elpais.com'
+    feed_url = (
+        "https://news.google.com/rss/search?"
+        f"q={urllib.parse.quote(query)}"
+        "&hl=es-ES&gl=ES&ceid=ES:es"
+    )
+    xml_text, err = _fetch_page(feed_url)
+    if not xml_text:
         if errors is not None and err:
             errors.append(f"El País — {author_name}: {err}")
         return []
 
-    soup = BeautifulSoup(html, "html.parser")
-    articles = []
+    try:
+        root = ET.fromstring(xml_text)
+    except ET.ParseError:
+        if errors is not None:
+            errors.append(f"El País — {author_name}: XML inválido")
+        return []
 
-    for article_el in soup.select("article"):
-        link_el = article_el.select_one("h2 a")
-        if not link_el:
+    articles = []
+    for item in root.findall(".//item"):
+        title_el = item.find("title")
+        if title_el is None or not title_el.text:
+            continue
+        title = title_el.text.strip()
+        # Google News añade " - El País" al final de cada título
+        for suffix in (" - El País", " - EL PAÍS"):
+            if title.endswith(suffix):
+                title = title[: -len(suffix)].strip()
+                break
+
+        # Fecha (filtrado por cutoff)
+        pub_el = item.find("pubDate")
+        pub_date = None
+        if pub_el is not None and pub_el.text:
+            try:
+                pub_date = parsedate_to_datetime(pub_el.text)
+            except (ValueError, TypeError):
+                pass
+        if not pub_date or pub_date < cutoff:
             continue
 
-        title = link_el.get_text(strip=True)
-        href = link_el.get("href", "")
-        if href.startswith("/"):
-            href = f"https://elpais.com{href}"
-
-        # Fecha
-        time_el = article_el.select_one("time")
-        pub_date = None
-        if time_el:
-            datetime_attr = time_el.get("datetime", "")
-            if datetime_attr:
-                try:
-                    pub_date = datetime.fromisoformat(
-                        datetime_attr.replace("Z", "+00:00")
-                    )
-                except ValueError:
-                    pass
-
-        # Subtítulo / entradilla
-        subtitle_el = article_el.select_one("p")
-        subtitle = subtitle_el.get_text(strip=True) if subtitle_el else ""
-
-        # Etiqueta de sección
-        tag_el = article_el.select_one("span.c_ty, .c_ty, .a_ti_s")
-        tag = tag_el.get_text(strip=True) if tag_el else ""
-
-        if pub_date and pub_date < cutoff:
+        # URL: preferimos la URL original de elpais.com si la
+        # encontramos en el <description> (a veces aparece como <a
+        # href>); si no, usamos el <link> de Google News tal cual.
+        href = ""
+        desc_el = item.find("description")
+        if desc_el is not None and desc_el.text:
+            desc_soup = BeautifulSoup(desc_el.text, "html.parser")
+            for a in desc_soup.find_all("a", href=True):
+                if "elpais.com" in a["href"] and "news.google.com" not in a["href"]:
+                    href = a["href"]
+                    break
+        if not href:
+            link_el = item.find("link")
+            if link_el is not None and link_el.text:
+                href = link_el.text.strip()
+        if not href:
             continue
 
         articles.append({
@@ -433,8 +461,8 @@ def fetch_elpais_articles(
             "author": author_name,
             "source": "El País",
             "date": pub_date,
-            "subtitle": subtitle,
-            "tag": tag,
+            "subtitle": "",
+            "tag": "",
         })
 
     return articles
@@ -1488,9 +1516,9 @@ def run_digest(notify_empty: bool = False, mode: str = "morning") -> None:
 
     # ── Tarde: artículos de columnistas (mensaje 1 de tarde) ─────────
     if mode in ("evening", "full"):
-        for author_name, slug in ELPAIS_AUTHORS.items():
-            log.info(f"[El País] Consultando: {author_name} ({slug})")
-            articles = fetch_elpais_articles(author_name, slug, cutoff, fetch_errors)
+        for author_name in ELPAIS_AUTHORS:
+            log.info(f"[El País] Consultando: {author_name}")
+            articles = fetch_elpais_articles(author_name, cutoff, fetch_errors)
             for art in articles:
                 if article_hash(art["url"]) not in seen_set:
                     all_new_articles.append(art)
