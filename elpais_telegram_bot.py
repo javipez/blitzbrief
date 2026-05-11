@@ -132,23 +132,16 @@ FOLLOWED_FOOTBALL_TEAMS: list[str] = [
     "Málaga",
 ]
 
-# Equipos de interés para filtrar noticias deportivas (en minúsculas)
-FOLLOWED_TEAMS_KEYWORDS: list[str] = [
-    "real madrid", "málaga", "malaga", "unicaja",
-    "málaga cf", "malaga cf",
-]
-
 # ── Fuentes deportivas dedicadas ──────────────────────────────────
 # Feeds RSS específicos de deporte para tener cobertura diaria
 SPORTS_SOURCES: dict[str, str] = {
-    "Marca Fútbol": "https://e00-marca.uecdn.es/rss/futbol.xml",
+    "Marca Primera": "https://e00-marca.uecdn.es/rss/futbol/primera-division.xml",
+    "Marca Segunda": "https://e00-marca.uecdn.es/rss/futbol/segunda-division.xml",
     "Marca Real Madrid": "https://e00-marca.uecdn.es/rss/futbol/real-madrid.xml",
     "Marca Málaga": "https://e00-marca.uecdn.es/rss/futbol/malaga.xml",
     "Marca Baloncesto": "https://e00-marca.uecdn.es/rss/baloncesto.xml",
-    "AS Fútbol": "https://feeds.as.com/mrss-s/pages/as/site/as.com/futbol",
-    "AS Baloncesto": "https://feeds.as.com/mrss-s/pages/as/site/as.com/baloncesto",
-    "La Opinión Deportes": "https://www.laopiniondemalaga.es/rss/section/11017",
-    "Málaga Hoy Deportes": "https://www.malagahoy.es/rss/section/deportes/",
+    "AS Fútbol": "https://feeds.as.com/mrss-s/list/as/site/as.com/section/futbol",
+    "AS Baloncesto": "https://feeds.as.com/mrss-s/list/as/site/as.com/section/baloncesto",
 }
 
 # Ligas ESPN a consultar para fútbol
@@ -355,7 +348,7 @@ def _fetch_page(url: str) -> tuple[Optional[str], Optional[str]]:
             try:
                 resp = session.get(url, timeout=15)
                 resp.raise_for_status()
-                return resp.text, None
+                return _decoded_response_text(resp), None
             except Exception as e:
                 err_str = str(e)
                 # Reintento único en 403 con espera más larga: a veces
@@ -373,10 +366,22 @@ def _fetch_page(url: str) -> tuple[Optional[str], Optional[str]]:
     try:
         resp = requests.get(url, headers=BROWSER_HEADERS, timeout=15)
         resp.raise_for_status()
-        return resp.text, None
+        return _decoded_response_text(resp), None
     except requests.RequestException as e:
         log.warning(f"Error al descargar {url}: {e}")
         return None, str(e)
+
+
+def _decoded_response_text(resp) -> str:
+    """Decodifica respuestas RSS/HTML evitando mojibake en feeds UTF-8."""
+    encoding = getattr(resp, "encoding", None)
+    if not encoding or encoding.lower() == "iso-8859-1":
+        apparent = getattr(resp, "apparent_encoding", None)
+        encoding = apparent or "utf-8"
+    content = getattr(resp, "content", None)
+    if content is None:
+        return resp.text
+    return content.decode(encoding, errors="replace")
 
 
 def _normalize_text(text: str) -> str:
@@ -421,88 +426,98 @@ def _url_matches_site_filter(url: str, required_site: Optional[str]) -> bool:
 # ── Scraper: El País ──────────────────────────────────────────────
 
 
-def fetch_elpais_articles(
-    author_name: str, cutoff: datetime, errors: Optional[list] = None
-) -> list[dict]:
-    """Extrae artículos recientes de un autor de El País vía Google News.
-
-    Hemos abandonado el scrapeo directo de elpais.com/autor/<slug>/ porque
-    su anti-bot lo bloquea con 403 (rate-limit + TLS fingerprint). Google
-    News indexa El País a las pocas horas y devuelve un RSS estable y
-    sin protección.
-
-    Limitación: la URL que entrega Google News no es siempre la URL
-    original de elpais.com (a partir de 2024 las codifica). Si no
-    podemos extraerla, usamos la de Google News tal cual; abre bien en
-    el navegador (redirige al artículo original).
-    """
-    import urllib.parse
-    query = f'"{author_name}" site:elpais.com'
-    feed_url = (
-        "https://news.google.com/rss/search?"
-        f"q={urllib.parse.quote(query)}"
-        "&hl=es-ES&gl=ES&ceid=ES:es"
+def _elpais_author_href_matches(href: str, slug: str) -> bool:
+    parsed_path = (
+        urlparse(href).path if href.startswith(("http://", "https://")) else href
     )
-    xml_text, err = _fetch_page(feed_url)
-    if not xml_text:
+    return parsed_path.rstrip("/") == f"/autor/{slug}"
+
+
+def _elpais_link_matches_author(link, author_name: str, slug: str) -> bool:
+    href = link.get("href", "")
+    if _elpais_author_href_matches(href, slug):
+        return True
+
+    link_text = _normalize_text(link.get_text(" ", strip=True))
+    return link_text == _normalize_text(author_name)
+
+
+def _elpais_byline_author_links(article_el) -> list:
+    byline_selectors = (
+        "address a[href*='/autor/'], "
+        ".c_a a[href*='/autor/'], "
+        ".c_au a[href*='/autor/'], "
+        ".a_md_a a[href*='/autor/'], "
+        "[class*='author'] a[href*='/autor/'], "
+        "[class*='autor'] a[href*='/autor/']"
+    )
+    byline_links = article_el.select(byline_selectors)
+    if byline_links:
+        return byline_links
+
+    return [
+        link
+        for link in article_el.select('a[href*="/autor/"]')
+        if link.parent is article_el
+    ]
+
+
+def _elpais_article_matches_author(article_el, author_name: str, slug: str) -> bool:
+    """Comprueba que una tarjeta de El País pertenece al autor esperado."""
+    for link in _elpais_byline_author_links(article_el):
+        if _elpais_link_matches_author(link, author_name, slug):
+            return True
+
+    return False
+
+
+def fetch_elpais_articles(
+    author_name: str, slug: str, cutoff: datetime, errors: Optional[list] = None
+) -> list[dict]:
+    """Extrae artículos recientes desde la página de autor de El País."""
+    url = f"https://elpais.com/autor/{slug}/"
+    html, err = _fetch_page(url)
+    if not html:
         if errors is not None and err:
             errors.append(f"El País — {author_name}: {err}")
         return []
 
-    try:
-        root = ET.fromstring(xml_text)
-    except ET.ParseError:
-        if errors is not None:
-            errors.append(f"El País — {author_name}: XML inválido")
-        return []
-
+    soup = BeautifulSoup(html, "html.parser")
     articles = []
-    for item in root.findall(".//item"):
-        title_el = item.find("title")
-        if title_el is None or not title_el.text:
-            continue
-        title = title_el.text.strip()
-        desc_el = item.find("description")
-        raw_description = desc_el.text if (desc_el is not None and desc_el.text) else ""
 
-        # Google News añade " - El País" al final de cada título
-        for suffix in (" - El País", " - EL PAÍS"):
-            if title.endswith(suffix):
-                title = title[: -len(suffix)].strip()
-                break
-
-        if not _rss_item_matches_author(author_name, title, raw_description):
+    for article_el in soup.select("article"):
+        if not _elpais_article_matches_author(article_el, author_name, slug):
             continue
 
-        # Fecha (filtrado por cutoff)
-        pub_el = item.find("pubDate")
+        link_el = article_el.select_one("h2 a")
+        if not link_el:
+            continue
+
+        title = link_el.get_text(strip=True)
+        href = link_el.get("href", "")
+        if href.startswith("/"):
+            href = f"https://elpais.com{href}"
+
         pub_date = None
-        if pub_el is not None and pub_el.text:
-            try:
-                pub_date = parsedate_to_datetime(pub_el.text)
-            except (ValueError, TypeError):
-                pass
-        if not pub_date or pub_date < cutoff:
+        time_el = article_el.select_one("time")
+        if time_el:
+            datetime_attr = time_el.get("datetime", "")
+            if datetime_attr:
+                try:
+                    pub_date = datetime.fromisoformat(
+                        datetime_attr.replace("Z", "+00:00")
+                    )
+                except ValueError:
+                    pass
+
+        if pub_date and pub_date < cutoff:
             continue
 
-        # URL: preferimos la URL original de elpais.com si la
-        # encontramos en el <description> (a veces aparece como <a
-        # href>); si no, usamos el <link> de Google News tal cual.
-        href = ""
-        if raw_description:
-            desc_soup = BeautifulSoup(raw_description, "html.parser")
-            for a in desc_soup.find_all("a", href=True):
-                if "elpais.com" in a["href"] and "news.google.com" not in a["href"]:
-                    href = a["href"]
-                    break
-        if not href:
-            link_el = item.find("link")
-            if link_el is not None and link_el.text:
-                href = link_el.text.strip()
-        if not href:
-            continue
-        if not _url_matches_site_filter(href, "elpais.com"):
-            continue
+        subtitle_el = article_el.select_one("p")
+        subtitle = subtitle_el.get_text(strip=True) if subtitle_el else ""
+
+        tag_el = article_el.select_one("span.c_ty, .c_ty, .a_ti_s")
+        tag = tag_el.get_text(strip=True) if tag_el else ""
 
         articles.append({
             "title": title,
@@ -510,8 +525,8 @@ def fetch_elpais_articles(
             "author": author_name,
             "source": "El País",
             "date": pub_date,
-            "subtitle": "",
-            "tag": "",
+            "subtitle": subtitle,
+            "tag": tag,
         })
 
     return _limit_articles_per_author(articles)
@@ -1367,25 +1382,6 @@ def send_news_briefing() -> bool:
     return success
 
 
-def send_evening_briefing() -> bool:
-    """Envía tiempo de mañana y Bitcoin como mensajes separados."""
-    sent_any = False
-
-    tomorrow_weather = fetch_tomorrow_weather_block()
-    if tomorrow_weather:
-        _send_plain_message(tomorrow_weather)
-        sent_any = True
-
-    bitcoin = fetch_bitcoin_block()
-    if bitcoin:
-        _send_plain_message(bitcoin)
-        sent_any = True
-
-    if not sent_any:
-        log.info("[Evening] Sin datos para el briefing de tarde.")
-    return sent_any
-
-
 def _send_plain_message(text: str) -> bool:
     """Envía un mensaje de texto plano (sin Markdown) a Telegram."""
     if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
@@ -1582,9 +1578,9 @@ def run_digest(notify_empty: bool = False, mode: str = "morning") -> None:
 
     # ── Tarde: artículos de columnistas (mensaje 1 de tarde) ─────────
     if mode in ("evening", "full"):
-        for author_name in ELPAIS_AUTHORS:
-            log.info(f"[El País] Consultando: {author_name}")
-            articles = fetch_elpais_articles(author_name, cutoff, fetch_errors)
+        for author_name, slug in ELPAIS_AUTHORS.items():
+            log.info(f"[El País] Consultando: {author_name} ({slug})")
+            articles = fetch_elpais_articles(author_name, slug, cutoff, fetch_errors)
             for art in articles:
                 if article_hash(art["url"]) not in seen_set:
                     all_new_articles.append(art)
@@ -1809,7 +1805,7 @@ def _handle_command(text: str, chat_id: int) -> None:
     elif cmd == "/briefing":
         if not GEMINI_API_KEY:
             send_telegram_message(
-                _escape_md("❌ No hay API key de Anthropic configurada.")
+                _escape_md("❌ No hay API key de Gemini configurada.")
             )
             return
         send_telegram_message("📰 _Generando briefing de noticias\\.\\.\\._")

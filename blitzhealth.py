@@ -48,10 +48,9 @@ DIGESTS_DIR = Path(__file__).parent / "digests" / "health"
 
 # ── Fuentes RSS ───────────────────────────────────────────────────
 HEALTH_SOURCES: dict[str, str] = {
-    "Marcos Vázquez (blog)": "https://www.fitnessrevolucionario.com/feed/",
-    "Marcos Vázquez (podcast)": "https://www.fitnessrevolucionario.com/feed/podcast/",
+    "Marcos Vázquez": "https://www.fitnessrevolucionario.com/feed/",
     "Peter Attia": "https://peterattiamd.com/feed/",
-    "Layne Norton": "https://feeds.megaphone.fm/BRMD7227498498",
+    "Layne Norton": "https://feeds.captivate.fm/the-dr-layne-norton-podcast/",
     "Steve Magness": "https://stevemagness.substack.com/feed",
 }
 
@@ -77,10 +76,18 @@ def _fetch_page(url: str) -> tuple[Optional[str], Optional[str]]:
     try:
         resp = requests.get(url, headers=headers, timeout=15)
         resp.raise_for_status()
-        return resp.text, None
+        return _decoded_response_text(resp), None
     except requests.RequestException as e:
         log.warning(f"Error al descargar {url}: {e}")
         return None, str(e)
+
+
+def _decoded_response_text(resp) -> str:
+    """Decodifica respuestas RSS/HTML evitando mojibake en feeds UTF-8."""
+    encoding = resp.encoding
+    if not encoding or encoding.lower() == "iso-8859-1":
+        encoding = resp.apparent_encoding or "utf-8"
+    return resp.content.decode(encoding, errors="replace")
 
 
 # ---------------------------------------------------------------------------

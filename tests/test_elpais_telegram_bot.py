@@ -13,57 +13,83 @@ class FakeDateTime(datetime):
 
 
 class BlitzBriefTests(unittest.TestCase):
-    def test_elpais_google_news_filters_out_non_author_entries(self):
-        xml = """<?xml version="1.0"?>
-        <rss><channel><title>Google News</title>
-          <item>
-            <title>Laporta celebra por todo lo alto el título de Liga - El País</title>
-            <link>https://news.google.com/articles/bad</link>
-            <description><![CDATA[<a href="https://elpais.com/deportes/2026-06-01/laporta.html">Ver</a>]]></description>
-            <pubDate>Mon, 01 Jun 2026 11:00:00 +0000</pubDate>
-          </item>
-          <item>
-            <title>Manuel Jabois firma su nueva columna - EL PAÍS</title>
-            <link>https://news.google.com/articles/ok</link>
-            <description><![CDATA[<a href="https://elpais.com/opinion/2026-06-01/columna.html">Ver</a>]]></description>
-            <pubDate>Mon, 01 Jun 2026 10:00:00 +0000</pubDate>
-          </item>
-        </channel></rss>
+    def test_elpais_scraper_ignores_cards_not_signed_by_author(self):
+        html = """
+        <html><body>
+          <article>
+            <h2><a href="/deportes/2026-06-01/articulo-bueno.html">Artículo bueno</a></h2>
+            <p class="c_a"><a href="/autor/manuel-jabois-sueiro/">Manuel Jabois</a></p>
+            <time datetime="2026-06-01T08:00:00+00:00"></time>
+          </article>
+          <article>
+            <h2><a href="/espana/2026-06-01/ultima-hora.html">Última hora ajena</a></h2>
+            <p class="c_a"><a href="/autor/otra-persona/">Otra Persona</a></p>
+            <time datetime="2026-06-01T09:00:00+00:00"></time>
+          </article>
+        </body></html>
         """
 
-        with patch.object(bot, "_fetch_page", return_value=(xml, None)):
+        with patch.object(bot, "_fetch_page", return_value=(html, None)):
             articles = bot.fetch_elpais_articles(
                 "Manuel Jabois",
+                "manuel-jabois-sueiro",
                 datetime(2026, 6, 1, tzinfo=timezone.utc),
             )
 
-        self.assertEqual([article["title"] for article in articles], ["Manuel Jabois firma su nueva columna"])
+        self.assertEqual([article["title"] for article in articles], ["Artículo bueno"])
 
-    def test_elpais_google_news_returns_only_latest_author_article(self):
-        xml = """<?xml version="1.0"?>
-        <rss><channel><title>Google News</title>
-          <item>
-            <title>Manuel Jabois publica lo más reciente - El País</title>
-            <link>https://news.google.com/articles/recent</link>
-            <description><![CDATA[<a href="https://elpais.com/opinion/2026-06-01/reciente.html">Ver</a>]]></description>
-            <pubDate>Mon, 01 Jun 2026 11:00:00 +0000</pubDate>
-          </item>
-          <item>
-            <title>Manuel Jabois publica lo más antiguo - El País</title>
-            <link>https://news.google.com/articles/old</link>
-            <description><![CDATA[<a href="https://elpais.com/opinion/2026-06-01/antiguo.html">Ver</a>]]></description>
-            <pubDate>Mon, 01 Jun 2026 09:00:00 +0000</pubDate>
-          </item>
-        </channel></rss>
+    def test_elpais_scraper_ignores_related_author_links_inside_card(self):
+        html = """
+        <html><body>
+          <article>
+            <h2><a href="/deportes/2026-06-01/laporta.html">Artículo ajeno</a></h2>
+            <p class="c_a"><a href="/autor/otra-persona/">Otra Persona</a></p>
+            <div class="related">
+              <a href="/autor/manuel-jabois-sueiro/">Manuel Jabois</a>
+            </div>
+            <time datetime="2026-06-01T11:00:00+00:00"></time>
+          </article>
+          <article>
+            <h2><a href="/deportes/2026-06-01/jabois.html">Artículo de Jabois</a></h2>
+            <p class="c_a"><a href="/autor/manuel-jabois-sueiro/">Manuel Jabois</a></p>
+            <time datetime="2026-06-01T10:00:00+00:00"></time>
+          </article>
+        </body></html>
         """
 
-        with patch.object(bot, "_fetch_page", return_value=(xml, None)):
+        with patch.object(bot, "_fetch_page", return_value=(html, None)):
             articles = bot.fetch_elpais_articles(
                 "Manuel Jabois",
+                "manuel-jabois-sueiro",
                 datetime(2026, 6, 1, tzinfo=timezone.utc),
             )
 
-        self.assertEqual([article["title"] for article in articles], ["Manuel Jabois publica lo más reciente"])
+        self.assertEqual([article["title"] for article in articles], ["Artículo de Jabois"])
+
+    def test_elpais_scraper_returns_only_latest_author_article(self):
+        html = """
+        <html><body>
+          <article>
+            <h2><a href="/deportes/2026-06-01/mas-reciente.html">Más reciente</a></h2>
+            <p class="c_a"><a href="/autor/manuel-jabois-sueiro/">Manuel Jabois</a></p>
+            <time datetime="2026-06-01T11:00:00+00:00"></time>
+          </article>
+          <article>
+            <h2><a href="/deportes/2026-06-01/mas-antiguo.html">Más antiguo</a></h2>
+            <p class="c_a"><a href="/autor/manuel-jabois-sueiro/">Manuel Jabois</a></p>
+            <time datetime="2026-06-01T09:00:00+00:00"></time>
+          </article>
+        </body></html>
+        """
+
+        with patch.object(bot, "_fetch_page", return_value=(html, None)):
+            articles = bot.fetch_elpais_articles(
+                "Manuel Jabois",
+                "manuel-jabois-sueiro",
+                datetime(2026, 6, 1, tzinfo=timezone.utc),
+            )
+
+        self.assertEqual([article["title"] for article in articles], ["Más reciente"])
 
     def test_google_news_rss_filters_out_non_author_entries(self):
         xml = """<?xml version="1.0"?>
