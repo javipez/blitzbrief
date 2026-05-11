@@ -31,7 +31,9 @@ import logging
 import hashlib
 import random
 import time
+import unicodedata
 import xml.etree.ElementTree as ET
+from urllib.parse import urlparse
 from datetime import datetime, timedelta, timezone
 from email.utils import parsedate_to_datetime
 from pathlib import Path
@@ -95,6 +97,7 @@ NEWS_SOURCES: dict[str, str] = {
 
 # Ventana temporal: artículos publicados en las últimas N horas
 LOOKBACK_HOURS = 26  # 26h para cubrir holgadamente un día completo
+MAX_ARTICLES_PER_AUTHOR = 1
 
 # User-Agent y cabeceras tipo navegador para las peticiones HTTP.
 # El País ha empezado a devolver 403 en las páginas /autor/<slug>/ cuando
@@ -376,6 +379,45 @@ def _fetch_page(url: str) -> tuple[Optional[str], Optional[str]]:
         return None, str(e)
 
 
+def _normalize_text(text: str) -> str:
+    """Normaliza texto para comparaciones tolerantes a acentos y espacios."""
+    normalized = unicodedata.normalize("NFKD", text)
+    without_accents = "".join(
+        ch for ch in normalized if not unicodedata.combining(ch)
+    )
+    return " ".join(without_accents.casefold().split())
+
+
+def _limit_articles_per_author(articles: list[dict]) -> list[dict]:
+    """Devuelve solo los artículos más recientes esperados para un autor."""
+    articles.sort(
+        key=lambda art: art.get("date") or datetime.min.replace(tzinfo=timezone.utc),
+        reverse=True,
+    )
+    return articles[:MAX_ARTICLES_PER_AUTHOR]
+
+
+def _rss_item_matches_author(author_name: str, title: str, subtitle: str = "") -> bool:
+    author_tokens = [t for t in _normalize_text(author_name).split() if len(t) >= 3]
+    if not author_tokens:
+        return True
+    normalized_text = _normalize_text(f"{title} {subtitle}")
+    return sum(token in normalized_text for token in author_tokens) >= 2
+
+
+def _extract_first_url_from_html_snippet(snippet: str) -> str:
+    soup = BeautifulSoup(snippet, "html.parser")
+    link = soup.find("a")
+    return (link.get("href", "") if link else "").strip()
+
+
+def _url_matches_site_filter(url: str, required_site: Optional[str]) -> bool:
+    if not required_site:
+        return True
+    host = urlparse(url).netloc.lower().removeprefix("www.")
+    return host.endswith(required_site)
+
+
 # ── Scraper: El País ──────────────────────────────────────────────
 
 
@@ -420,11 +462,17 @@ def fetch_elpais_articles(
         if title_el is None or not title_el.text:
             continue
         title = title_el.text.strip()
+        desc_el = item.find("description")
+        raw_description = desc_el.text if (desc_el is not None and desc_el.text) else ""
+
         # Google News añade " - El País" al final de cada título
         for suffix in (" - El País", " - EL PAÍS"):
             if title.endswith(suffix):
                 title = title[: -len(suffix)].strip()
                 break
+
+        if not _rss_item_matches_author(author_name, title, raw_description):
+            continue
 
         # Fecha (filtrado por cutoff)
         pub_el = item.find("pubDate")
@@ -441,9 +489,8 @@ def fetch_elpais_articles(
         # encontramos en el <description> (a veces aparece como <a
         # href>); si no, usamos el <link> de Google News tal cual.
         href = ""
-        desc_el = item.find("description")
-        if desc_el is not None and desc_el.text:
-            desc_soup = BeautifulSoup(desc_el.text, "html.parser")
+        if raw_description:
+            desc_soup = BeautifulSoup(raw_description, "html.parser")
             for a in desc_soup.find_all("a", href=True):
                 if "elpais.com" in a["href"] and "news.google.com" not in a["href"]:
                     href = a["href"]
@@ -453,6 +500,8 @@ def fetch_elpais_articles(
             if link_el is not None and link_el.text:
                 href = link_el.text.strip()
         if not href:
+            continue
+        if not _url_matches_site_filter(href, "elpais.com"):
             continue
 
         articles.append({
@@ -465,7 +514,7 @@ def fetch_elpais_articles(
             "tag": "",
         })
 
-    return articles
+    return _limit_articles_per_author(articles)
 
 
 # ── Scraper: El Plural ────────────────────────────────────────────
@@ -525,7 +574,7 @@ def fetch_elplural_articles(
             "tag": "",
         })
 
-    return articles
+    return _limit_articles_per_author(articles)
 
 
 def _fetch_elplural_article_date(url: str) -> Optional[datetime]:
@@ -565,6 +614,10 @@ def fetch_rss_articles(
         return []
 
     articles = []
+    apply_author_guard = (
+        urlparse(feed_url).netloc.lower().endswith("news.google.com")
+        and "/rss/search" in urlparse(feed_url).path
+    )
 
     # Detectar nombre de la fuente desde el feed
     channel = root.find("channel")
@@ -585,6 +638,19 @@ def fetch_rss_articles(
 
         title = title_el.text or ""
         href = link_el.text or ""
+        raw_description = desc_el.text if (desc_el is not None and desc_el.text) else ""
+        candidate_url = _extract_first_url_from_html_snippet(raw_description) or href
+
+        if apply_author_guard and not _rss_item_matches_author(
+            author_name, title, raw_description
+        ):
+            continue
+        if apply_author_guard and "site:" in feed_url:
+            # Google News site filters should not leak unrelated domains when
+            # the original URL is available in the description.
+            site = feed_url.split("site:", 1)[1].split("&", 1)[0].split("+", 1)[0]
+            if not _url_matches_site_filter(candidate_url, site):
+                continue
 
         # Parsear fecha RFC 2822 (formato RSS estándar)
         pub_date = None
@@ -598,10 +664,10 @@ def fetch_rss_articles(
             continue
 
         subtitle = ""
-        if desc_el is not None and desc_el.text:
+        if raw_description:
             # Limpiar HTML básico de la descripción
             from html import unescape
-            subtitle = unescape(desc_el.text)
+            subtitle = unescape(raw_description)
             # Eliminar tags HTML
             subtitle = BeautifulSoup(subtitle, "html.parser").get_text(strip=True)
 
@@ -615,7 +681,7 @@ def fetch_rss_articles(
             "tag": "",
         })
 
-    return articles
+    return _limit_articles_per_author(articles)
 
 
 # ── Scraper: Podcast (RSS + filtro por título) ────────────────────

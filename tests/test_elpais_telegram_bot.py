@@ -1,0 +1,210 @@
+import unittest
+from datetime import datetime, timezone
+from unittest.mock import patch
+
+import elpais_telegram_bot as bot
+
+
+class FakeDateTime(datetime):
+    @classmethod
+    def now(cls, tz=None):
+        base = cls(2026, 6, 1, 22, 30, tzinfo=timezone.utc)
+        return base.astimezone(tz) if tz is not None else base.replace(tzinfo=None)
+
+
+class BlitzBriefTests(unittest.TestCase):
+    def test_elpais_google_news_filters_out_non_author_entries(self):
+        xml = """<?xml version="1.0"?>
+        <rss><channel><title>Google News</title>
+          <item>
+            <title>Laporta celebra por todo lo alto el título de Liga - El País</title>
+            <link>https://news.google.com/articles/bad</link>
+            <description><![CDATA[<a href="https://elpais.com/deportes/2026-06-01/laporta.html">Ver</a>]]></description>
+            <pubDate>Mon, 01 Jun 2026 11:00:00 +0000</pubDate>
+          </item>
+          <item>
+            <title>Manuel Jabois firma su nueva columna - EL PAÍS</title>
+            <link>https://news.google.com/articles/ok</link>
+            <description><![CDATA[<a href="https://elpais.com/opinion/2026-06-01/columna.html">Ver</a>]]></description>
+            <pubDate>Mon, 01 Jun 2026 10:00:00 +0000</pubDate>
+          </item>
+        </channel></rss>
+        """
+
+        with patch.object(bot, "_fetch_page", return_value=(xml, None)):
+            articles = bot.fetch_elpais_articles(
+                "Manuel Jabois",
+                datetime(2026, 6, 1, tzinfo=timezone.utc),
+            )
+
+        self.assertEqual([article["title"] for article in articles], ["Manuel Jabois firma su nueva columna"])
+
+    def test_elpais_google_news_returns_only_latest_author_article(self):
+        xml = """<?xml version="1.0"?>
+        <rss><channel><title>Google News</title>
+          <item>
+            <title>Manuel Jabois publica lo más reciente - El País</title>
+            <link>https://news.google.com/articles/recent</link>
+            <description><![CDATA[<a href="https://elpais.com/opinion/2026-06-01/reciente.html">Ver</a>]]></description>
+            <pubDate>Mon, 01 Jun 2026 11:00:00 +0000</pubDate>
+          </item>
+          <item>
+            <title>Manuel Jabois publica lo más antiguo - El País</title>
+            <link>https://news.google.com/articles/old</link>
+            <description><![CDATA[<a href="https://elpais.com/opinion/2026-06-01/antiguo.html">Ver</a>]]></description>
+            <pubDate>Mon, 01 Jun 2026 09:00:00 +0000</pubDate>
+          </item>
+        </channel></rss>
+        """
+
+        with patch.object(bot, "_fetch_page", return_value=(xml, None)):
+            articles = bot.fetch_elpais_articles(
+                "Manuel Jabois",
+                datetime(2026, 6, 1, tzinfo=timezone.utc),
+            )
+
+        self.assertEqual([article["title"] for article in articles], ["Manuel Jabois publica lo más reciente"])
+
+    def test_google_news_rss_filters_out_non_author_entries(self):
+        xml = """<?xml version="1.0"?>
+        <rss><channel><title>Google News</title>
+          <item>
+            <title>Manuel Jabois analiza la política española</title>
+            <link>https://news.google.com/articles/ok</link>
+            <pubDate>Mon, 01 Jun 2026 10:00:00 +0000</pubDate>
+          </item>
+          <item>
+            <title>Última hora en España y economía</title>
+            <link>https://news.google.com/articles/bad</link>
+            <pubDate>Mon, 01 Jun 2026 11:00:00 +0000</pubDate>
+          </item>
+        </channel></rss>
+        """
+
+        with patch.object(bot, "_fetch_page", return_value=(xml, None)):
+            articles = bot.fetch_rss_articles(
+                "Manuel Jabois",
+                "https://news.google.com/rss/search?q=Manuel+Jabois&hl=es&gl=ES&ceid=ES:es",
+                datetime(2026, 6, 1, tzinfo=timezone.utc),
+            )
+
+        self.assertEqual(len(articles), 1)
+        self.assertEqual(articles[0]["title"], "Manuel Jabois analiza la política española")
+
+    def test_google_news_rss_applies_site_filter_when_present(self):
+        xml = """<?xml version="1.0"?>
+        <rss><channel><title>Google News</title>
+          <item>
+            <title>Manuel Jabois firma su nueva columna</title>
+            <link>https://news.google.com/articles/ok</link>
+            <description><![CDATA[<a href="https://elpais.com/opinion/2026-06-01/columna.html">Ver</a>]]></description>
+            <pubDate>Mon, 01 Jun 2026 10:00:00 +0000</pubDate>
+          </item>
+          <item>
+            <title>Manuel Jabois comenta la actualidad</title>
+            <link>https://news.google.com/articles/bad</link>
+            <description><![CDATA[<a href="https://example.com/opinion/2026-06-01/ajeno.html">Ver</a>]]></description>
+            <pubDate>Mon, 01 Jun 2026 11:00:00 +0000</pubDate>
+          </item>
+        </channel></rss>
+        """
+
+        with patch.object(bot, "_fetch_page", return_value=(xml, None)):
+            articles = bot.fetch_rss_articles(
+                "Manuel Jabois",
+                "https://news.google.com/rss/search?q=Manuel+Jabois+site:elpais.com&hl=es&gl=ES&ceid=ES:es",
+                datetime(2026, 6, 1, tzinfo=timezone.utc),
+            )
+
+        self.assertEqual(len(articles), 1)
+        self.assertEqual(articles[0]["title"], "Manuel Jabois firma su nueva columna")
+
+    def test_articles_are_not_marked_seen_when_send_fails(self):
+        article = {
+            "title": "Titulo",
+            "url": "https://example.com/a1",
+            "author": "Autor",
+            "source": "El Pais",
+            "date": datetime(2026, 3, 27, tzinfo=timezone.utc),
+            "subtitle": "",
+            "tag": "",
+        }
+        saved_states = []
+
+        with patch.dict(bot.ELPAIS_AUTHORS, {"Autor": "slug"}, clear=True), \
+             patch.dict(bot.ELPLURAL_AUTHORS, {}, clear=True), \
+             patch.dict(bot.RSS_AUTHORS, {}, clear=True), \
+             patch.dict(bot.PODCAST_SOURCES, {}, clear=True), \
+             patch.object(bot, "GEMINI_API_KEY", ""), \
+             patch.object(bot, "load_seen_articles", return_value=[]), \
+             patch.object(bot, "fetch_elpais_articles", return_value=[article]), \
+             patch.object(bot, "send_telegram_message", return_value=False), \
+             patch.object(bot, "fetch_tomorrow_weather_block", return_value=""), \
+             patch.object(bot, "fetch_bitcoin_block", return_value=""), \
+             patch.object(bot, "save_seen_articles", side_effect=lambda seen: saved_states.append(set(seen))):
+            bot.run_digest(mode="evening")
+
+        self.assertEqual(saved_states, [])
+
+    def test_only_successful_podcast_sends_are_marked_seen(self):
+        segments = [
+            {
+                "title": "Segmento 1",
+                "audio_url": "https://example.com/audio1.mp3",
+                "label": "Podcast",
+                "date": datetime(2026, 3, 27, tzinfo=timezone.utc),
+                "duration": "12:34",
+            },
+            {
+                "title": "Segmento 2",
+                "audio_url": "https://example.com/audio2.mp3",
+                "label": "Podcast",
+                "date": datetime(2026, 3, 27, tzinfo=timezone.utc),
+                "duration": "10:00",
+            },
+        ]
+        saved_states = []
+        first_hash = bot.article_hash(segments[0]["audio_url"])
+        second_hash = bot.article_hash(segments[1]["audio_url"])
+
+        with patch.dict(bot.ELPAIS_AUTHORS, {}, clear=True), \
+             patch.dict(bot.ELPLURAL_AUTHORS, {}, clear=True), \
+             patch.dict(bot.RSS_AUTHORS, {}, clear=True), \
+             patch.dict(bot.PODCAST_SOURCES, {"Podcast": {"feed": "feed", "filter": "x"}}, clear=True), \
+             patch.object(bot, "GEMINI_API_KEY", ""), \
+             patch.object(bot, "load_seen_articles", return_value=[]), \
+             patch.object(bot, "fetch_podcast_segments", return_value=segments), \
+             patch.object(bot, "fetch_weather_block", return_value=""), \
+             patch.object(bot, "send_telegram_audio", side_effect=[True, False]), \
+             patch.object(bot, "save_seen_articles", side_effect=lambda seen: saved_states.append(set(seen))):
+            bot.run_digest(mode="morning")
+
+        self.assertEqual(saved_states, [{first_hash}])
+        self.assertNotIn(second_hash, saved_states[0])
+
+    def test_empty_digest_header_uses_madrid_timezone(self):
+        with patch.object(bot, "datetime", FakeDateTime):
+            message = bot.format_telegram_message([])
+
+        self.assertIn(" 2 de ", message)
+        self.assertNotIn(" 1 de ", message)
+
+    def test_bitcoin_block_includes_price_and_change(self):
+        class FakeResponse:
+            ok = True
+            text = ""
+
+            def raise_for_status(self):
+                return None
+
+            def json(self):
+                return {"bitcoin": {"eur": 61234.0, "eur_24h_change": 4.2}}
+
+        with patch.object(bot.requests, "get", return_value=FakeResponse()):
+            block = bot.fetch_bitcoin_block()
+
+        self.assertEqual(block, "📈 Bitcoin: 61.234 € (+4.2%)")
+
+
+if __name__ == "__main__":
+    unittest.main()
