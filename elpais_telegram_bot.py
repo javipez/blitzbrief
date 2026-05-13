@@ -426,98 +426,80 @@ def _url_matches_site_filter(url: str, required_site: Optional[str]) -> bool:
 # ── Scraper: El País ──────────────────────────────────────────────
 
 
-def _elpais_author_href_matches(href: str, slug: str) -> bool:
-    parsed_path = (
-        urlparse(href).path if href.startswith(("http://", "https://")) else href
-    )
-    return parsed_path.rstrip("/") == f"/autor/{slug}"
-
-
-def _elpais_link_matches_author(link, author_name: str, slug: str) -> bool:
-    href = link.get("href", "")
-    if _elpais_author_href_matches(href, slug):
-        return True
-
-    link_text = _normalize_text(link.get_text(" ", strip=True))
-    return link_text == _normalize_text(author_name)
-
-
-def _elpais_byline_author_links(article_el) -> list:
-    byline_selectors = (
-        "address a[href*='/autor/'], "
-        ".c_a a[href*='/autor/'], "
-        ".c_au a[href*='/autor/'], "
-        ".a_md_a a[href*='/autor/'], "
-        "[class*='author'] a[href*='/autor/'], "
-        "[class*='autor'] a[href*='/autor/']"
-    )
-    byline_links = article_el.select(byline_selectors)
-    if byline_links:
-        return byline_links
-
-    return [
-        link
-        for link in article_el.select('a[href*="/autor/"]')
-        if link.parent is article_el
-    ]
-
-
-def _elpais_article_matches_author(article_el, author_name: str, slug: str) -> bool:
-    """Comprueba que una tarjeta de El País pertenece al autor esperado."""
-    for link in _elpais_byline_author_links(article_el):
-        if _elpais_link_matches_author(link, author_name, slug):
-            return True
-
-    return False
-
-
 def fetch_elpais_articles(
-    author_name: str, slug: str, cutoff: datetime, errors: Optional[list] = None
+    author_name: str, cutoff: datetime, errors: Optional[list] = None
 ) -> list[dict]:
-    """Extrae artículos recientes desde la página de autor de El País."""
-    url = f"https://elpais.com/autor/{slug}/"
-    html, err = _fetch_page(url)
-    if not html:
+    """Extrae artículos recientes de un autor de El País vía Google News RSS.
+
+    elpais.com/autor/<slug>/ está blindado contra bots (403 sistemático
+    pese a cabeceras de navegador, curl_cffi, sesión persistente y
+    jitter). Google News indexa El País a las pocas horas, devuelve un
+    RSS estable y sin anti-bot.
+    """
+    import urllib.parse
+
+    query = f'"{author_name}" site:elpais.com'
+    feed_url = (
+        "https://news.google.com/rss/search?"
+        f"q={urllib.parse.quote(query)}"
+        "&hl=es-ES&gl=ES&ceid=ES:es"
+    )
+    xml_text, err = _fetch_page(feed_url)
+    if not xml_text:
         if errors is not None and err:
             errors.append(f"El País — {author_name}: {err}")
         return []
 
-    soup = BeautifulSoup(html, "html.parser")
+    try:
+        root = ET.fromstring(xml_text)
+    except ET.ParseError:
+        if errors is not None:
+            errors.append(f"El País — {author_name}: XML inválido")
+        return []
+
     articles = []
+    for item in root.findall(".//item"):
+        title_el = item.find("title")
+        if title_el is None or not title_el.text:
+            continue
+        title = title_el.text.strip()
+        for suffix in (" - El País", " - EL PAÍS"):
+            if title.endswith(suffix):
+                title = title[: -len(suffix)].strip()
+                break
 
-    for article_el in soup.select("article"):
-        if not _elpais_article_matches_author(article_el, author_name, slug):
+        desc_el = item.find("description")
+        raw_description = desc_el.text if (desc_el is not None and desc_el.text) else ""
+
+        if not _rss_item_matches_author(author_name, title, raw_description):
             continue
 
-        link_el = article_el.select_one("h2 a")
-        if not link_el:
+        # Preferimos la URL original de elpais.com si aparece en la
+        # descripción; si no, caemos al <link> de Google News (que abre
+        # bien y redirige al artículo original).
+        href = ""
+        if raw_description:
+            desc_soup = BeautifulSoup(raw_description, "html.parser")
+            for a in desc_soup.find_all("a", href=True):
+                if "elpais.com" in a["href"] and "news.google.com" not in a["href"]:
+                    href = a["href"]
+                    break
+        if not href:
+            link_el = item.find("link")
+            if link_el is not None and link_el.text:
+                href = link_el.text.strip()
+        if not href:
             continue
-
-        title = link_el.get_text(strip=True)
-        href = link_el.get("href", "")
-        if href.startswith("/"):
-            href = f"https://elpais.com{href}"
 
         pub_date = None
-        time_el = article_el.select_one("time")
-        if time_el:
-            datetime_attr = time_el.get("datetime", "")
-            if datetime_attr:
-                try:
-                    pub_date = datetime.fromisoformat(
-                        datetime_attr.replace("Z", "+00:00")
-                    )
-                except ValueError:
-                    pass
-
-        if pub_date and pub_date < cutoff:
+        pub_el = item.find("pubDate")
+        if pub_el is not None and pub_el.text:
+            try:
+                pub_date = parsedate_to_datetime(pub_el.text)
+            except (ValueError, TypeError):
+                pass
+        if not pub_date or pub_date < cutoff:
             continue
-
-        subtitle_el = article_el.select_one("p")
-        subtitle = subtitle_el.get_text(strip=True) if subtitle_el else ""
-
-        tag_el = article_el.select_one("span.c_ty, .c_ty, .a_ti_s")
-        tag = tag_el.get_text(strip=True) if tag_el else ""
 
         articles.append({
             "title": title,
@@ -525,8 +507,8 @@ def fetch_elpais_articles(
             "author": author_name,
             "source": "El País",
             "date": pub_date,
-            "subtitle": subtitle,
-            "tag": tag,
+            "subtitle": "",
+            "tag": "",
         })
 
     return _limit_articles_per_author(articles)
@@ -1578,9 +1560,9 @@ def run_digest(notify_empty: bool = False, mode: str = "morning") -> None:
 
     # ── Tarde: artículos de columnistas (mensaje 1 de tarde) ─────────
     if mode in ("evening", "full"):
-        for author_name, slug in ELPAIS_AUTHORS.items():
-            log.info(f"[El País] Consultando: {author_name} ({slug})")
-            articles = fetch_elpais_articles(author_name, slug, cutoff, fetch_errors)
+        for author_name in ELPAIS_AUTHORS:
+            log.info(f"[El País] Consultando: {author_name}")
+            articles = fetch_elpais_articles(author_name, cutoff, fetch_errors)
             for art in articles:
                 if article_hash(art["url"]) not in seen_set:
                     all_new_articles.append(art)
