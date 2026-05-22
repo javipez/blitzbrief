@@ -33,11 +33,11 @@ import random
 import time
 import unicodedata
 import xml.etree.ElementTree as ET
-from urllib.parse import urlparse
+from urllib.parse import quote, urlparse
 from datetime import datetime, timedelta, timezone
 from email.utils import parsedate_to_datetime
 from pathlib import Path
-from typing import Optional
+from typing import Callable, Optional
 from zoneinfo import ZoneInfo
 
 import requests
@@ -416,6 +416,15 @@ def _extract_first_url_from_html_snippet(snippet: str) -> str:
     return (link.get("href", "") if link else "").strip()
 
 
+def _extract_first_site_url_from_html_snippet(snippet: str, required_site: str) -> str:
+    soup = BeautifulSoup(snippet, "html.parser")
+    for link in soup.find_all("a", href=True):
+        href = link.get("href", "").strip()
+        if _url_matches_site_filter(href, required_site):
+            return href
+    return ""
+
+
 def _url_matches_site_filter(url: str, required_site: Optional[str]) -> bool:
     if not required_site:
         return True
@@ -423,7 +432,68 @@ def _url_matches_site_filter(url: str, required_site: Optional[str]) -> bool:
     return host.endswith(required_site)
 
 
+def _url_matches_host(url: str, host_name: str) -> bool:
+    host = urlparse(url).netloc.lower().removeprefix("www.")
+    return host == host_name
+
+
+def _strip_source_suffix(title: str, source_names: tuple[str, ...]) -> str:
+    """Quita sufijos típicos de Google News: ' - Medio'."""
+    clean_title = title.strip()
+    normalized = _normalize_text(clean_title)
+    for source in source_names:
+        suffix = f" - {source}"
+        if normalized.endswith(_normalize_text(suffix)):
+            return clean_title[: -len(suffix)].strip()
+    return clean_title
+
+
 # ── Scraper: El País ──────────────────────────────────────────────
+
+
+def _elpais_author_href_matches(href: str, slug: str) -> bool:
+    parsed_path = (
+        urlparse(href).path if href.startswith(("http://", "https://")) else href
+    )
+    return parsed_path.rstrip("/") == f"/autor/{slug}"
+
+
+def _elpais_link_matches_author(link, author_name: str, slug: str) -> bool:
+    href = link.get("href", "")
+    if _elpais_author_href_matches(href, slug):
+        return True
+
+    link_text = _normalize_text(link.get_text(" ", strip=True))
+    return link_text == _normalize_text(author_name)
+
+
+def _elpais_byline_author_links(article_el) -> list:
+    byline_selectors = (
+        "address a[href*='/autor/'], "
+        ".c_a a[href*='/autor/'], "
+        ".c_au a[href*='/autor/'], "
+        ".a_md_a a[href*='/autor/'], "
+        "[class*='author'] a[href*='/autor/'], "
+        "[class*='autor'] a[href*='/autor/']"
+    )
+    byline_links = article_el.select(byline_selectors)
+    if byline_links:
+        return byline_links
+
+    return [
+        link
+        for link in article_el.select('a[href*="/autor/"]')
+        if link.parent is article_el
+    ]
+
+
+def _elpais_article_matches_author(article_el, author_name: str, slug: str) -> bool:
+    """Comprueba que una tarjeta de El País pertenece al autor esperado."""
+    for link in _elpais_byline_author_links(article_el):
+        if _elpais_link_matches_author(link, author_name, slug):
+            return True
+
+    return False
 
 
 def _elpais_article_is_by_author(article_url: str, slug: str) -> bool:
@@ -447,49 +517,157 @@ def _elpais_article_is_by_author(article_url: str, slug: str) -> bool:
 def fetch_elpais_articles(
     author_name: str, slug: str, cutoff: datetime, errors: Optional[list] = None
 ) -> list[dict]:
-    """Extrae artículos recientes de un autor de El País vía Google News RSS.
+    """Extrae artículos recientes de un autor de El País.
 
     elpais.com/autor/<slug>/ está blindado contra bots (403 sistemático
     pese a cabeceras de navegador, curl_cffi, sesión persistente y
-    jitter). Google News indexa El País a las pocas horas, devuelve un
-    RSS estable y sin anti-bot.
+    jitter). Google News RSS es la vía principal.
 
     Como `"<autor>" site:elpais.com` también devuelve artículos que
     solo mencionan al columnista (entrevistas, perfiles, homenajes),
     verificamos la autoría real fetcheando el artículo y comprobando
     que su byline enlaza a /autor/<slug>/.
     """
-    import urllib.parse
+    google_errors: list[str] = []
+    google_articles = _fetch_elpais_google_news_articles(
+        author_name, slug, cutoff, google_errors
+    )
+    if google_articles:
+        return google_articles
 
-    query = f'"{author_name}" site:elpais.com'
+    direct_errors: list[str] = []
+    direct_articles = _fetch_elpais_author_page_articles(
+        author_name, slug, cutoff, direct_errors
+    )
+    if direct_articles:
+        return direct_articles
+
+    if errors is not None:
+        errors.extend(google_errors)
+        errors.extend(direct_errors)
+    return []
+
+
+def _fetch_elpais_author_page_articles(
+    author_name: str, slug: str, cutoff: datetime, errors: Optional[list] = None
+) -> list[dict]:
+    """Extrae artículos recientes desde la página de autor de El País."""
+    url = f"https://elpais.com/autor/{slug}/"
+    html, err = _fetch_page(url)
+    if not html:
+        if errors is not None and err:
+            errors.append(f"El País — {author_name}: {err}")
+        return []
+
+    soup = BeautifulSoup(html, "html.parser")
+    articles = []
+
+    for article_el in soup.select("article"):
+        if not _elpais_article_matches_author(article_el, author_name, slug):
+            continue
+
+        link_el = article_el.select_one("h2 a")
+        if not link_el:
+            continue
+
+        title = link_el.get_text(strip=True)
+        href = link_el.get("href", "")
+        if href.startswith("/"):
+            href = f"https://elpais.com{href}"
+
+        pub_date = None
+        time_el = article_el.select_one("time")
+        if time_el:
+            datetime_attr = time_el.get("datetime", "")
+            if datetime_attr:
+                try:
+                    pub_date = datetime.fromisoformat(
+                        datetime_attr.replace("Z", "+00:00")
+                    )
+                except ValueError:
+                    pass
+
+        if pub_date and pub_date < cutoff:
+            continue
+
+        subtitle_el = article_el.select_one("p")
+        subtitle = subtitle_el.get_text(strip=True) if subtitle_el else ""
+
+        tag_el = article_el.select_one("span.c_ty, .c_ty, .a_ti_s")
+        tag = tag_el.get_text(strip=True) if tag_el else ""
+
+        articles.append({
+            "title": title,
+            "url": href,
+            "author": author_name,
+            "source": "El País",
+            "date": pub_date,
+            "subtitle": subtitle,
+            "tag": tag,
+        })
+
+    return _limit_articles_per_author(articles)
+
+
+def _fetch_elpais_google_news_articles(
+    author_name: str,
+    slug: str,
+    cutoff: datetime,
+    errors: Optional[list] = None,
+) -> list[dict]:
+    """Busca artículos de El País vía Google News y confirma la firma."""
+    return _fetch_google_news_site_articles(
+        author_name=author_name,
+        site="elpais.com",
+        source_name="El País",
+        cutoff=cutoff,
+        errors=errors,
+        error_label="El País Google News",
+        source_suffixes=("El País", "EL PAÍS"),
+        require_original_site_url=True,
+        article_url_filter=lambda href: _elpais_article_is_by_author(href, slug),
+    )
+
+
+def _fetch_google_news_site_articles(
+    author_name: str,
+    site: str,
+    source_name: str,
+    cutoff: datetime,
+    errors: Optional[list] = None,
+    error_label: Optional[str] = None,
+    source_suffixes: tuple[str, ...] = (),
+    require_original_site_url: bool = False,
+    article_url_filter: Optional[Callable[[str], bool]] = None,
+) -> list[dict]:
+    """Busca artículos de un autor en Google News restringiendo por dominio."""
+    query = f'"{author_name}" site:{site}'
     feed_url = (
         "https://news.google.com/rss/search?"
-        f"q={urllib.parse.quote(query)}"
+        f"q={quote(query)}"
         "&hl=es-ES&gl=ES&ceid=ES:es"
     )
     xml_text, err = _fetch_page(feed_url)
+    label = error_label or f"{source_name} Google News"
     if not xml_text:
         if errors is not None and err:
-            errors.append(f"El País — {author_name}: {err}")
+            errors.append(f"{label} — {author_name}: {err}")
         return []
 
     try:
         root = ET.fromstring(xml_text)
     except ET.ParseError:
         if errors is not None:
-            errors.append(f"El País — {author_name}: XML inválido")
+            errors.append(f"{label} — {author_name}: XML inválido")
         return []
 
     articles = []
     for item in root.findall(".//item"):
         title_el = item.find("title")
-        if title_el is None or not title_el.text:
+        link_el = item.find("link")
+        if title_el is None or not title_el.text or link_el is None:
             continue
-        title = title_el.text.strip()
-        for suffix in (" - El País", " - EL PAÍS"):
-            if title.endswith(suffix):
-                title = title[: -len(suffix)].strip()
-                break
+        title = _strip_source_suffix(title_el.text, source_suffixes)
 
         desc_el = item.find("description")
         raw_description = desc_el.text if (desc_el is not None and desc_el.text) else ""
@@ -497,18 +675,16 @@ def fetch_elpais_articles(
         if not _rss_item_matches_author(author_name, title, raw_description):
             continue
 
-        # Necesitamos la URL real de elpais.com para verificar el byline.
-        # Si Google News no la expone en el <description>, descartamos el
-        # item: sin URL del artículo no podemos confirmar autoría.
-        href = ""
-        if raw_description:
-            desc_soup = BeautifulSoup(raw_description, "html.parser")
-            for a in desc_soup.find_all("a", href=True):
-                if "elpais.com" in a["href"] and "news.google.com" not in a["href"]:
-                    href = a["href"]
-                    break
+        href = _extract_first_site_url_from_html_snippet(raw_description, site)
+        if not href:
+            if require_original_site_url:
+                continue
+            href = (link_el.text or "").strip()
         if not href:
             continue
+        if not _url_matches_site_filter(href, site):
+            if not _url_matches_host(href, "news.google.com"):
+                continue
 
         pub_date = None
         pub_el = item.find("pubDate")
@@ -520,14 +696,14 @@ def fetch_elpais_articles(
         if not pub_date or pub_date < cutoff:
             continue
 
-        if not _elpais_article_is_by_author(href, slug):
+        if article_url_filter is not None and not article_url_filter(href):
             continue
 
         articles.append({
             "title": title,
             "url": href,
             "author": author_name,
-            "source": "El País",
+            "source": source_name,
             "date": pub_date,
             "subtitle": "",
             "tag": "",
@@ -543,13 +719,41 @@ def fetch_elplural_articles(
     author_name: str, slug: str, cutoff: datetime, errors: Optional[list] = None
 ) -> list[dict]:
     """
-    Extrae artículos recientes del tag de autor en El Plural.
+    Extrae artículos recientes de El Plural.
 
-    El Plural no muestra fechas en el listado, así que visitamos cada
-    artículo para extraer la fecha del meta tag article:published_time.
-    Solo comprobamos los primeros 5 artículos del listado (ya están
-    ordenados de más reciente a más antiguo).
+    Google News RSS es la vía principal para no depender del HTML del tag.
+    Si no devuelve resultados, usa el listado directo como respaldo.
     """
+    google_errors: list[str] = []
+    google_articles = _fetch_google_news_site_articles(
+        author_name=author_name,
+        site="elplural.com",
+        source_name="El Plural",
+        cutoff=cutoff,
+        errors=google_errors,
+        error_label="El Plural Google News",
+        source_suffixes=("El Plural", "ELPLURAL.COM", "ElPlural.com"),
+    )
+    if google_articles:
+        return google_articles
+
+    direct_errors: list[str] = []
+    direct_articles = _fetch_elplural_tag_articles(
+        author_name, slug, cutoff, direct_errors
+    )
+    if direct_articles:
+        return direct_articles
+
+    if errors is not None:
+        errors.extend(google_errors)
+        errors.extend(direct_errors)
+    return []
+
+
+def _fetch_elplural_tag_articles(
+    author_name: str, slug: str, cutoff: datetime, errors: Optional[list] = None
+) -> list[dict]:
+    """Extrae artículos recientes del tag de autor en El Plural."""
     url = f"https://www.elplural.com/tag/{slug}"
     html, err = _fetch_page(url)
     if not html:

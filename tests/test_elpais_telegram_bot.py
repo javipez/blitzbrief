@@ -117,6 +117,247 @@ class BlitzBriefTests(unittest.TestCase):
             ["Manuel Jabois firma columna reciente"],
         )
 
+    def test_elpais_uses_google_news_before_direct_scraping(self):
+        google_news_xml = """<?xml version="1.0"?>
+        <rss><channel><title>Google News</title>
+          <item>
+            <title>Manuel Jabois firma su nueva columna - EL PAÍS</title>
+            <link>https://news.google.com/articles/ok</link>
+            <description><![CDATA[<a href="https://elpais.com/opinion/2026-06-01/columna.html">Ver</a>]]></description>
+            <pubDate>Mon, 01 Jun 2026 10:00:00 +0000</pubDate>
+          </item>
+        </channel></rss>
+        """
+
+        article_html = (
+            '<html><body><address><a href="/autor/manuel-jabois-sueiro/">'
+            "Manuel Jabois</a></address></body></html>"
+        )
+
+        def fake_fetch(url):
+            if "news.google.com" in url:
+                return google_news_xml, None
+            return article_html, None
+
+        with patch.object(bot, "_fetch_page", side_effect=fake_fetch) as fetch_page:
+            articles = bot.fetch_elpais_articles(
+                "Manuel Jabois",
+                "manuel-jabois-sueiro",
+                datetime(2026, 6, 1, tzinfo=timezone.utc),
+            )
+
+        self.assertEqual(len(articles), 1)
+        self.assertEqual(articles[0]["title"], "Manuel Jabois firma su nueva columna")
+        self.assertEqual(
+            articles[0]["url"],
+            "https://elpais.com/opinion/2026-06-01/columna.html",
+        )
+        self.assertIn("news.google.com/rss/search", fetch_page.call_args_list[0].args[0])
+
+    def test_elpais_falls_back_to_direct_scraping_when_google_news_is_empty(self):
+        empty_google_news_xml = """<?xml version="1.0"?>
+        <rss><channel><title>Google News</title></channel></rss>
+        """
+        direct_html = """
+        <html><body>
+          <article>
+            <h2><a href="/opinion/2026-06-01/columna.html">Artículo directo</a></h2>
+            <p class="c_a"><a href="/autor/manuel-jabois-sueiro/">Manuel Jabois</a></p>
+            <time datetime="2026-06-01T10:00:00+00:00"></time>
+          </article>
+        </body></html>
+        """
+
+        with patch.object(
+            bot,
+            "_fetch_page",
+            side_effect=[(empty_google_news_xml, None), (direct_html, None)],
+        ):
+            articles = bot.fetch_elpais_articles(
+                "Manuel Jabois",
+                "manuel-jabois-sueiro",
+                datetime(2026, 6, 1, tzinfo=timezone.utc),
+            )
+
+        self.assertEqual([article["title"] for article in articles], ["Artículo directo"])
+        self.assertEqual(
+            articles[0]["url"],
+            "https://elpais.com/opinion/2026-06-01/columna.html",
+        )
+
+    def test_elpais_google_news_success_avoids_direct_page_error(self):
+        google_news_xml = """<?xml version="1.0"?>
+        <rss><channel><title>Google News</title>
+          <item>
+            <title>Manuel Jabois firma su nueva columna - EL PAÍS</title>
+            <link>https://news.google.com/articles/ok</link>
+            <description><![CDATA[<a href="https://elpais.com/opinion/2026-06-01/columna.html">Ver</a>]]></description>
+            <pubDate>Mon, 01 Jun 2026 10:00:00 +0000</pubDate>
+          </item>
+        </channel></rss>
+        """
+        errors = []
+
+        article_html = (
+            '<html><body><address><a href="/autor/manuel-jabois-sueiro/">'
+            "Manuel Jabois</a></address></body></html>"
+        )
+
+        def fake_fetch(url):
+            if "news.google.com" in url:
+                return google_news_xml, None
+            return article_html, None
+
+        with patch.object(bot, "_fetch_page", side_effect=fake_fetch):
+            articles = bot.fetch_elpais_articles(
+                "Manuel Jabois",
+                "manuel-jabois-sueiro",
+                datetime(2026, 6, 1, tzinfo=timezone.utc),
+                errors,
+            )
+
+        self.assertEqual(len(articles), 1)
+        self.assertEqual(errors, [])
+
+    def test_elpais_google_news_fallback_filters_out_non_author_entries(self):
+        xml = """<?xml version="1.0"?>
+        <rss><channel><title>Google News</title>
+          <item>
+            <title>Laporta celebra por todo lo alto el título de Liga - El País</title>
+            <link>https://news.google.com/articles/bad</link>
+            <description><![CDATA[<a href="https://elpais.com/deportes/2026-06-01/laporta.html">Ver</a>]]></description>
+            <pubDate>Mon, 01 Jun 2026 11:00:00 +0000</pubDate>
+          </item>
+          <item>
+            <title>Manuel Jabois firma su nueva columna - EL PAÍS</title>
+            <link>https://news.google.com/articles/ok</link>
+            <description><![CDATA[<a href="https://elpais.com/opinion/2026-06-01/columna.html">Ver</a>]]></description>
+            <pubDate>Mon, 01 Jun 2026 10:00:00 +0000</pubDate>
+          </item>
+        </channel></rss>
+        """
+        article_pages = {
+            "https://elpais.com/deportes/2026-06-01/laporta.html": (
+                '<html><body><address><a href="/autor/otra-persona/">'
+                "Otra Persona</a></address></body></html>"
+            ),
+            "https://elpais.com/opinion/2026-06-01/columna.html": (
+                '<html><body><address><a href="/autor/manuel-jabois-sueiro/">'
+                "Manuel Jabois</a></address></body></html>"
+            ),
+        }
+
+        def fake_fetch(url):
+            if url in article_pages:
+                return article_pages[url], None
+            return xml, None
+
+        with patch.object(bot, "_fetch_page", side_effect=fake_fetch):
+            articles = bot._fetch_elpais_google_news_articles(
+                "Manuel Jabois",
+                "manuel-jabois-sueiro",
+                datetime(2026, 6, 1, tzinfo=timezone.utc),
+            )
+
+        self.assertEqual(
+            [article["title"] for article in articles],
+            ["Manuel Jabois firma su nueva columna"],
+        )
+        self.assertEqual(
+            [article["url"] for article in articles],
+            ["https://elpais.com/opinion/2026-06-01/columna.html"],
+        )
+
+    def test_elpais_google_news_skips_google_link_when_original_is_missing(self):
+        xml = """<?xml version="1.0"?>
+        <rss><channel><title>Google News</title>
+          <item>
+            <title>Manuel Jabois firma su nueva columna - EL PAÍS</title>
+            <link>https://news.google.com/articles/ok</link>
+            <pubDate>Mon, 01 Jun 2026 10:00:00 +0000</pubDate>
+          </item>
+        </channel></rss>
+        """
+
+        with patch.object(bot, "_fetch_page", return_value=(xml, None)):
+            articles = bot._fetch_elpais_google_news_articles(
+                "Manuel Jabois",
+                "manuel-jabois-sueiro",
+                datetime(2026, 6, 1, tzinfo=timezone.utc),
+            )
+
+        self.assertEqual(articles, [])
+
+    def test_elplural_uses_google_news_for_benjamin_prado(self):
+        xml = """<?xml version="1.0"?>
+        <rss><channel><title>Google News</title>
+          <item>
+            <title>Benjamín Prado publica una nueva columna - El Plural</title>
+            <link>https://news.google.com/articles/ok</link>
+            <description><![CDATA[<a href="https://www.elplural.com/opinion/benjamin-prado/columna.html">Ver</a>]]></description>
+            <pubDate>Mon, 01 Jun 2026 10:00:00 +0000</pubDate>
+          </item>
+        </channel></rss>
+        """
+
+        with patch.object(bot, "_fetch_page", return_value=(xml, None)) as fetch_page:
+            articles = bot.fetch_elplural_articles(
+                "Benjamín Prado",
+                "benjamin-prado",
+                datetime(2026, 6, 1, tzinfo=timezone.utc),
+            )
+
+        self.assertEqual(len(articles), 1)
+        self.assertEqual(
+            articles[0]["title"],
+            "Benjamín Prado publica una nueva columna",
+        )
+        self.assertEqual(
+            articles[0]["url"],
+            "https://www.elplural.com/opinion/benjamin-prado/columna.html",
+        )
+        self.assertEqual(articles[0]["source"], "El Plural")
+        self.assertIn("site%3Aelplural.com", fetch_page.call_args.args[0])
+
+    def test_elplural_falls_back_to_tag_page_when_google_news_is_empty(self):
+        empty_google_news_xml = """<?xml version="1.0"?>
+        <rss><channel><title>Google News</title></channel></rss>
+        """
+        tag_html = """
+        <html><body>
+          <div class="item">
+            <h3><a href="/opinion/benjamin-prado/directa.html">Columna directa</a></h3>
+            <p class="excerpt">Entradilla</p>
+          </div>
+        </body></html>
+        """
+        article_html = """
+        <html><head>
+          <meta property="article:published_time" content="2026-06-01T10:00:00+00:00">
+        </head></html>
+        """
+
+        with patch.object(
+            bot,
+            "_fetch_page",
+            side_effect=[
+                (empty_google_news_xml, None),
+                (tag_html, None),
+                (article_html, None),
+            ],
+        ):
+            articles = bot.fetch_elplural_articles(
+                "Benjamín Prado",
+                "benjamin-prado",
+                datetime(2026, 6, 1, tzinfo=timezone.utc),
+            )
+
+        self.assertEqual([article["title"] for article in articles], ["Columna directa"])
+        self.assertEqual(
+            articles[0]["url"],
+            "https://www.elplural.com/opinion/benjamin-prado/directa.html",
+        )
+
     def test_google_news_rss_filters_out_non_author_entries(self):
         xml = """<?xml version="1.0"?>
         <rss><channel><title>Google News</title>
