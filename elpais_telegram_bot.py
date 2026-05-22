@@ -95,6 +95,11 @@ NEWS_SOURCES: dict[str, str] = {
     "Anthropic News": "https://raw.githubusercontent.com/taobojlen/anthropic-rss-feed/main/anthropic_news_rss.xml",
 }
 
+ELPAIS_AUTHOR_FEEDS: tuple[str, ...] = (
+    "https://feeds.elpais.com/mrss-s/pages/ep/site/elpais.com/section/opinion/portada",
+    "https://feeds.elpais.com/mrss-s/pages/ep/site/elpais.com/portada",
+)
+
 # Ventana temporal: artículos publicados en las últimas N horas
 LOOKBACK_HOURS = 26  # 26h para cubrir holgadamente un día completo
 MAX_ARTICLES_PER_AUTHOR = 1
@@ -411,6 +416,16 @@ def _rss_item_matches_author(author_name: str, title: str, subtitle: str = "") -
     return sum(token in normalized_text for token in author_tokens) >= 2
 
 
+def _creator_matches_author(creator_text: str, author_name: str) -> bool:
+    normalized_author = _normalize_text(author_name)
+    creators = re.split(r"[,;/|]|\sy\s", creator_text)
+    return any(
+        _normalize_text(creator) == normalized_author
+        or _normalize_text(creator).startswith(f"{normalized_author} ")
+        for creator in creators
+    )
+
+
 def _extract_first_url_from_html_snippet(snippet: str) -> str:
     soup = BeautifulSoup(snippet, "html.parser")
     link = soup.find("a")
@@ -620,27 +635,76 @@ def _elpais_article_is_by_author(
 def fetch_elpais_articles(
     author_name: str, slug: str, cutoff: datetime, errors: Optional[list] = None
 ) -> list[dict]:
-    """Extrae artículos recientes de un autor de El País.
+    """Extrae artículos recientes de El País desde feeds oficiales.
 
-    elpais.com/autor/<slug>/ está blindado contra bots (403 sistemático
-    pese a cabeceras de navegador, curl_cffi, sesión persistente y
-    jitter). Google News RSS es la vía principal.
-
-    Como `"<autor>" site:elpais.com` también devuelve artículos que
-    solo mencionan al columnista (entrevistas, perfiles, homenajes),
-    verificamos la autoría real fetcheando el artículo y comprobando
-    que su byline enlaza a /autor/<slug>/.
+    Los feeds de `feeds.elpais.com` incluyen `dc:creator`, que es una
+    señal de autoría más estable que Google News y evita abrir páginas
+    `/autor/` o artículos, que El País bloquea intermitentemente con 403.
     """
-    google_errors: list[str] = []
-    google_articles = _fetch_elpais_google_news_articles(
-        author_name, slug, cutoff, google_errors
-    )
-    if google_articles:
-        return google_articles
+    return _fetch_elpais_feed_articles(author_name, cutoff, errors)
 
-    if errors is not None:
-        errors.extend(google_errors)
-    return []
+
+def _fetch_elpais_feed_articles(
+    author_name: str, cutoff: datetime, errors: Optional[list] = None
+) -> list[dict]:
+    articles: list[dict] = []
+    seen_urls: set[str] = set()
+    feed_errors: list[str] = []
+
+    for feed_url in ELPAIS_AUTHOR_FEEDS:
+        xml_text, err = _fetch_page(feed_url)
+        if not xml_text:
+            if err:
+                feed_errors.append(err)
+            continue
+
+        try:
+            root = ET.fromstring(xml_text)
+        except ET.ParseError:
+            feed_errors.append("XML inválido")
+            continue
+
+        for item in root.findall(".//item"):
+            creator_text = item.findtext("{http://purl.org/dc/elements/1.1/}creator")
+            if not creator_text or not _creator_matches_author(
+                creator_text, author_name
+            ):
+                continue
+
+            title = (item.findtext("title") or "").strip()
+            href = (item.findtext("link") or "").strip()
+            if not title or not href or href in seen_urls:
+                continue
+
+            pub_date = None
+            pub_text = item.findtext("pubDate")
+            if pub_text:
+                try:
+                    pub_date = parsedate_to_datetime(pub_text)
+                except (ValueError, TypeError):
+                    pass
+            if not pub_date or pub_date < cutoff:
+                continue
+
+            desc = item.findtext("description") or ""
+            subtitle = BeautifulSoup(desc, "html.parser").get_text(" ", strip=True)
+            category = item.findtext("category") or ""
+
+            seen_urls.add(href)
+            articles.append({
+                "title": title,
+                "url": href,
+                "author": author_name,
+                "source": "El País",
+                "date": pub_date,
+                "subtitle": subtitle[:150],
+                "tag": category.strip(),
+            })
+
+    if not articles and errors is not None and len(feed_errors) == len(ELPAIS_AUTHOR_FEEDS):
+        errors.append(f"El País feeds — {author_name}: {'; '.join(feed_errors)}")
+
+    return _limit_articles_per_author(articles)
 
 
 def _fetch_elpais_author_page_articles(
