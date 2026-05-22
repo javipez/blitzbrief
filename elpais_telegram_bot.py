@@ -462,19 +462,27 @@ def _decode_google_news_url(source_url: str) -> str:
         return source_url
 
     article_id = path_parts[-1]
+    header_options = (None, BROWSER_HEADERS)
     for path_prefix in ("articles", "rss/articles"):
-        try:
-            resp = requests.get(
-                f"https://news.google.com/{path_prefix}/{article_id}",
-                headers=BROWSER_HEADERS,
-                timeout=10,
-            )
-            resp.raise_for_status()
-        except requests.RequestException:
-            continue
+        data_el = None
+        last_text = ""
+        for headers in header_options:
+            try:
+                resp = requests.get(
+                    f"https://news.google.com/{path_prefix}/{article_id}",
+                    headers=headers,
+                    timeout=10,
+                )
+                resp.raise_for_status()
+            except requests.RequestException:
+                continue
 
-        soup = BeautifulSoup(resp.text, "html.parser")
-        data_el = soup.select_one("[data-n-a-sg][data-n-a-ts]")
+            last_text = resp.text
+            soup = BeautifulSoup(last_text, "html.parser")
+            data_el = soup.select_one("[data-n-a-sg][data-n-a-ts]")
+            if data_el:
+                break
+
         if not data_el:
             continue
 
@@ -483,16 +491,16 @@ def _decode_google_news_url(source_url: str) -> str:
         if not signature or not timestamp:
             continue
 
-        payload = [
-            "Fbv4je",
-            (
-                '["garturlreq",[["X","X",["X","X"],null,null,1,1,'
-                '"US:en",null,1,null,null,null,null,null,0,1],"X","X",'
-                f'1,[1,1,1],1,1,null,0,0,null,0],"{article_id}",'
-                f'{timestamp},"{signature}"]'
-            ),
-        ]
         try:
+            payload = [
+                "Fbv4je",
+                (
+                    '["garturlreq",[["X","X",["X","X"],null,null,1,1,'
+                    '"US:en",null,1,null,null,null,null,null,0,1],"X","X",'
+                    f'1,[1,1,1],1,1,null,0,0,null,0],"{article_id}",'
+                    f'{timestamp},"{signature}"]'
+                ),
+            ]
             decode_resp = requests.post(
                 "https://news.google.com/_/DotsSplashUi/data/batchexecute",
                 headers={
@@ -563,7 +571,9 @@ def _elpais_article_matches_author(article_el, author_name: str, slug: str) -> b
     return False
 
 
-def _elpais_article_is_by_author(article_url: str, slug: str) -> bool:
+def _elpais_article_is_by_author(
+    article_url: str, author_name: str, slug: str
+) -> bool:
     """Verifica que un artículo de elpais.com está firmado por el autor.
 
     Las páginas de artículo de elpais.com sí son accesibles (al
@@ -578,8 +588,33 @@ def _elpais_article_is_by_author(article_url: str, slug: str) -> bool:
     if not html:
         log.info(f"[El País] No se pudo verificar firma; se omite: {article_url}")
         return False
+    soup = BeautifulSoup(html, "html.parser")
+
+    meta_author = soup.select_one('meta[name="author"]')
+    if meta_author and meta_author.get("content"):
+        return _normalize_text(meta_author["content"]) == _normalize_text(author_name)
+
+    for script in soup.select('script[type="application/ld+json"]'):
+        try:
+            data = json.loads(script.get_text(strip=True))
+        except json.JSONDecodeError:
+            continue
+        for item in data if isinstance(data, list) else [data]:
+            author = item.get("author") if isinstance(item, dict) else None
+            authors = author if isinstance(author, list) else [author]
+            for author_item in authors:
+                if isinstance(author_item, dict):
+                    name = author_item.get("name", "")
+                else:
+                    name = str(author_item or "")
+                if _normalize_text(name) == _normalize_text(author_name):
+                    return True
+
     needle = f"/autor/{slug}/"
-    return needle in html
+    for link in soup.select("address a[href*='/autor/'], .a_md_a a[href*='/autor/']"):
+        if needle in link.get("href", ""):
+            return True
+    return False
 
 
 def fetch_elpais_articles(
@@ -686,7 +721,9 @@ def _fetch_elpais_google_news_articles(
         source_suffixes=("El País", "EL PAÍS"),
         require_original_site_url=True,
         require_author_text_match=False,
-        article_url_filter=lambda href: _elpais_article_is_by_author(href, slug),
+        article_url_filter=lambda href: _elpais_article_is_by_author(
+            href, author_name, slug
+        ),
     )
 
 

@@ -58,6 +58,22 @@ class BlitzBriefTests(unittest.TestCase):
         self.assertEqual(articles[0]["url"], "https://elpais.com/opinion/2026-06-01/columna-jabois.html")
         self.assertEqual(articles[0]["source"], "El País")
 
+    def test_elpais_verifies_meta_author_not_related_author_links(self):
+        html = """
+        <html><head><meta name="author" content="Riki Blanco"></head><body>
+          <aside><a href="/autor/juan-jose-millas/">Juan José Millás</a></aside>
+        </body></html>
+        """
+
+        with patch.object(bot, "_fetch_page", return_value=(html, None)):
+            self.assertFalse(
+                bot._elpais_article_is_by_author(
+                    "https://elpais.com/opinion/2026-06-01/riki-blanco.html",
+                    "Juan José Millás",
+                    "juan-jose-millas",
+                )
+            )
+
     def test_elpais_drops_google_news_link_when_decode_fails(self):
         xml = """<?xml version="1.0"?>
         <rss><channel><title>Google News</title>
