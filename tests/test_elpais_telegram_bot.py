@@ -58,7 +58,7 @@ class BlitzBriefTests(unittest.TestCase):
         self.assertEqual(articles[0]["url"], "https://elpais.com/opinion/2026-06-01/columna-jabois.html")
         self.assertEqual(articles[0]["source"], "El País")
 
-    def test_elpais_keeps_google_news_link_when_decode_fails(self):
+    def test_elpais_drops_google_news_link_when_decode_fails(self):
         xml = """<?xml version="1.0"?>
         <rss><channel><title>Google News</title>
           <item>
@@ -81,11 +81,7 @@ class BlitzBriefTests(unittest.TestCase):
                 datetime(2026, 6, 1, tzinfo=timezone.utc),
             )
 
-        self.assertEqual(len(articles), 1)
-        self.assertEqual(
-            articles[0]["url"],
-            "https://news.google.com/articles/redirect-jabois",
-        )
+        self.assertEqual(articles, [])
 
     def test_elpais_drops_unverified_google_link_without_author_text(self):
         xml = """<?xml version="1.0"?>
@@ -151,7 +147,7 @@ class BlitzBriefTests(unittest.TestCase):
             ["Manuel Jabois firma columna reciente"],
         )
 
-    def test_elpais_accepts_google_news_when_byline_check_is_blocked(self):
+    def test_elpais_drops_article_when_byline_check_is_blocked(self):
         xml = """<?xml version="1.0"?>
         <rss><channel><title>Google News</title>
           <item>
@@ -179,8 +175,7 @@ class BlitzBriefTests(unittest.TestCase):
                 datetime(2026, 6, 1, tzinfo=timezone.utc),
             )
 
-        self.assertEqual(len(articles), 1)
-        self.assertEqual(articles[0]["title"], "Yo estaba allí")
+        self.assertEqual(articles, [])
 
     def test_elpais_uses_google_news_before_direct_scraping(self):
         google_news_xml = """<?xml version="1.0"?>

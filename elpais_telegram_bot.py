@@ -576,10 +576,8 @@ def _elpais_article_is_by_author(article_url: str, slug: str) -> bool:
         return False
     html, _ = _fetch_page(article_url)
     if not html:
-        log.info(
-            f"[El País] No se pudo verificar firma; se acepta Google News: {article_url}"
-        )
-        return True
+        log.info(f"[El País] No se pudo verificar firma; se omite: {article_url}")
+        return False
     needle = f"/autor/{slug}/"
     return needle in html
 
@@ -688,7 +686,6 @@ def _fetch_elpais_google_news_articles(
         source_suffixes=("El País", "EL PAÍS"),
         require_original_site_url=True,
         require_author_text_match=False,
-        allow_google_url_fallback=True,
         article_url_filter=lambda href: _elpais_article_is_by_author(href, slug),
     )
 
