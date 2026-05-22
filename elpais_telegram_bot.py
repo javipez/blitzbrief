@@ -288,6 +288,7 @@ def article_hash(url: str) -> str:
 _ELPAIS_SESSION = None  # curl_cffi.Session si está disponible
 _REQUESTS_SESSION: Optional[requests.Session] = None
 _ELPAIS_WARMED_UP = False
+_GOOGLE_NEWS_URL_CACHE: dict[str, str] = {}
 
 
 def _get_elpais_session():
@@ -448,6 +449,72 @@ def _strip_source_suffix(title: str, source_names: tuple[str, ...]) -> str:
     return clean_title
 
 
+def _decode_google_news_url(source_url: str) -> str:
+    """Convierte enlaces internos de Google News en la URL del medio."""
+    if not _url_matches_host(source_url, "news.google.com"):
+        return source_url
+    if source_url in _GOOGLE_NEWS_URL_CACHE:
+        return _GOOGLE_NEWS_URL_CACHE[source_url]
+
+    parsed = urlparse(source_url)
+    path_parts = parsed.path.rstrip("/").split("/")
+    if len(path_parts) < 2 or path_parts[-2] not in {"articles", "read"}:
+        return source_url
+
+    article_id = path_parts[-1]
+    for path_prefix in ("articles", "rss/articles"):
+        try:
+            resp = requests.get(
+                f"https://news.google.com/{path_prefix}/{article_id}",
+                headers=BROWSER_HEADERS,
+                timeout=10,
+            )
+            resp.raise_for_status()
+        except requests.RequestException:
+            continue
+
+        soup = BeautifulSoup(resp.text, "html.parser")
+        data_el = soup.select_one("[data-n-a-sg][data-n-a-ts]")
+        if not data_el:
+            continue
+
+        signature = data_el.get("data-n-a-sg")
+        timestamp = data_el.get("data-n-a-ts")
+        if not signature or not timestamp:
+            continue
+
+        payload = [
+            "Fbv4je",
+            (
+                '["garturlreq",[["X","X",["X","X"],null,null,1,1,'
+                '"US:en",null,1,null,null,null,null,null,0,1],"X","X",'
+                f'1,[1,1,1],1,1,null,0,0,null,0],"{article_id}",'
+                f'{timestamp},"{signature}"]'
+            ),
+        ]
+        try:
+            decode_resp = requests.post(
+                "https://news.google.com/_/DotsSplashUi/data/batchexecute",
+                headers={
+                    "Content-Type": "application/x-www-form-urlencoded;charset=UTF-8",
+                    "User-Agent": USER_AGENT,
+                },
+                data=f"f.req={quote(json.dumps([[payload]]))}",
+                timeout=10,
+            )
+            decode_resp.raise_for_status()
+            parsed_data = json.loads(decode_resp.text.split("\n\n", 1)[1])[:-2]
+            decoded_url = json.loads(parsed_data[0][2])[1]
+        except (requests.RequestException, json.JSONDecodeError, IndexError, TypeError):
+            continue
+
+        if decoded_url:
+            _GOOGLE_NEWS_URL_CACHE[source_url] = decoded_url
+            return decoded_url
+
+    return source_url
+
+
 # ── Scraper: El País ──────────────────────────────────────────────
 
 
@@ -509,7 +576,10 @@ def _elpais_article_is_by_author(article_url: str, slug: str) -> bool:
         return False
     html, _ = _fetch_page(article_url)
     if not html:
-        return False
+        log.info(
+            f"[El País] No se pudo verificar firma; se acepta Google News: {article_url}"
+        )
+        return True
     needle = f"/autor/{slug}/"
     return needle in html
 
@@ -617,6 +687,8 @@ def _fetch_elpais_google_news_articles(
         error_label="El País Google News",
         source_suffixes=("El País", "EL PAÍS"),
         require_original_site_url=True,
+        require_author_text_match=False,
+        allow_google_url_fallback=True,
         article_url_filter=lambda href: _elpais_article_is_by_author(href, slug),
     )
 
@@ -630,6 +702,8 @@ def _fetch_google_news_site_articles(
     error_label: Optional[str] = None,
     source_suffixes: tuple[str, ...] = (),
     require_original_site_url: bool = False,
+    require_author_text_match: bool = True,
+    allow_google_url_fallback: bool = False,
     article_url_filter: Optional[Callable[[str], bool]] = None,
 ) -> list[dict]:
     """Busca artículos de un autor en Google News restringiendo por dominio."""
@@ -663,20 +737,12 @@ def _fetch_google_news_site_articles(
 
         desc_el = item.find("description")
         raw_description = desc_el.text if (desc_el is not None and desc_el.text) else ""
+        author_text_matches = _rss_item_matches_author(
+            author_name, title, raw_description
+        )
 
-        if not _rss_item_matches_author(author_name, title, raw_description):
+        if require_author_text_match and not author_text_matches:
             continue
-
-        href = _extract_first_site_url_from_html_snippet(raw_description, site)
-        if not href:
-            if require_original_site_url:
-                continue
-            href = (link_el.text or "").strip()
-        if not href:
-            continue
-        if not _url_matches_site_filter(href, site):
-            if not _url_matches_host(href, "news.google.com"):
-                continue
 
         pub_date = None
         pub_el = item.find("pubDate")
@@ -688,7 +754,33 @@ def _fetch_google_news_site_articles(
         if not pub_date or pub_date < cutoff:
             continue
 
-        if article_url_filter is not None and not article_url_filter(href):
+        href = _extract_first_site_url_from_html_snippet(raw_description, site)
+        if not href:
+            href = (link_el.text or "").strip()
+            if _url_matches_host(href, "news.google.com"):
+                href = _decode_google_news_url(href)
+        if not href:
+            continue
+        href_is_google_news = _url_matches_host(href, "news.google.com")
+        if not _url_matches_site_filter(href, site):
+            google_fallback_allowed = (
+                allow_google_url_fallback
+                and href_is_google_news
+                and author_text_matches
+            )
+            if (
+                require_original_site_url
+                and not google_fallback_allowed
+            ):
+                continue
+            if not require_original_site_url and not href_is_google_news:
+                continue
+
+        if (
+            article_url_filter is not None
+            and not href_is_google_news
+            and not article_url_filter(href)
+        ):
             continue
 
         articles.append({
@@ -725,6 +817,7 @@ def fetch_elplural_articles(
         errors=google_errors,
         error_label="El Plural Google News",
         source_suffixes=("El Plural", "ELPLURAL.COM", "ElPlural.com"),
+        require_author_text_match=False,
     )
     if google_articles:
         return google_articles

@@ -17,7 +17,7 @@ class BlitzBriefTests(unittest.TestCase):
         xml = """<?xml version="1.0"?>
         <rss><channel><title>Google News</title>
           <item>
-            <title>Manuel Jabois firma una columna sobre política - El País</title>
+            <title>Una columna sobre política - El País</title>
             <link>https://news.google.com/articles/ok</link>
             <description><![CDATA[<a href="https://elpais.com/opinion/2026-06-01/columna-jabois.html">Ver</a>]]></description>
             <pubDate>Mon, 01 Jun 2026 10:00:00 +0000</pubDate>
@@ -54,11 +54,11 @@ class BlitzBriefTests(unittest.TestCase):
             )
 
         self.assertEqual(len(articles), 1)
-        self.assertEqual(articles[0]["title"], "Manuel Jabois firma una columna sobre política")
+        self.assertEqual(articles[0]["title"], "Una columna sobre política")
         self.assertEqual(articles[0]["url"], "https://elpais.com/opinion/2026-06-01/columna-jabois.html")
         self.assertEqual(articles[0]["source"], "El País")
 
-    def test_elpais_skips_items_without_elpais_url_in_description(self):
+    def test_elpais_keeps_google_news_link_when_decode_fails(self):
         xml = """<?xml version="1.0"?>
         <rss><channel><title>Google News</title>
           <item>
@@ -69,10 +69,44 @@ class BlitzBriefTests(unittest.TestCase):
         </channel></rss>
         """
 
-        with patch.object(bot, "_fetch_page", return_value=(xml, None)):
+        with patch.object(bot, "_fetch_page", return_value=(xml, None)), \
+             patch.object(
+                 bot,
+                 "_decode_google_news_url",
+                 return_value="https://news.google.com/articles/redirect-jabois",
+             ):
             articles = bot.fetch_elpais_articles(
                 "Manuel Jabois",
                 "manuel-jabois-sueiro",
+                datetime(2026, 6, 1, tzinfo=timezone.utc),
+            )
+
+        self.assertEqual(len(articles), 1)
+        self.assertEqual(
+            articles[0]["url"],
+            "https://news.google.com/articles/redirect-jabois",
+        )
+
+    def test_elpais_drops_unverified_google_link_without_author_text(self):
+        xml = """<?xml version="1.0"?>
+        <rss><channel><title>Google News</title>
+          <item>
+            <title>Riki Blanco: el que pueda hacer - EL PAÍS</title>
+            <link>https://news.google.com/articles/ok</link>
+            <pubDate>Mon, 01 Jun 2026 10:00:00 +0000</pubDate>
+          </item>
+        </channel></rss>
+        """
+
+        with patch.object(bot, "_fetch_page", return_value=(xml, None)), \
+             patch.object(
+                 bot,
+                 "_decode_google_news_url",
+                 return_value="https://news.google.com/articles/ok",
+             ):
+            articles = bot.fetch_elpais_articles(
+                "Juan José Millás",
+                "juan-jose-millas",
                 datetime(2026, 6, 1, tzinfo=timezone.utc),
             )
 
@@ -116,6 +150,37 @@ class BlitzBriefTests(unittest.TestCase):
             [article["title"] for article in articles],
             ["Manuel Jabois firma columna reciente"],
         )
+
+    def test_elpais_accepts_google_news_when_byline_check_is_blocked(self):
+        xml = """<?xml version="1.0"?>
+        <rss><channel><title>Google News</title>
+          <item>
+            <title>Yo estaba allí - El País</title>
+            <link>https://news.google.com/articles/ok</link>
+            <pubDate>Mon, 01 Jun 2026 10:00:00 +0000</pubDate>
+          </item>
+        </channel></rss>
+        """
+
+        def fake_fetch(url):
+            if "news.google.com" in url:
+                return xml, None
+            return None, "403 Forbidden"
+
+        with patch.object(bot, "_fetch_page", side_effect=fake_fetch), \
+             patch.object(
+                 bot,
+                 "_decode_google_news_url",
+                 return_value="https://elpais.com/opinion/2026-06-01/yo-estaba-alli.html",
+             ):
+            articles = bot.fetch_elpais_articles(
+                "Juan José Millás",
+                "juan-jose-millas",
+                datetime(2026, 6, 1, tzinfo=timezone.utc),
+            )
+
+        self.assertEqual(len(articles), 1)
+        self.assertEqual(articles[0]["title"], "Yo estaba allí")
 
     def test_elpais_uses_google_news_before_direct_scraping(self):
         google_news_xml = """<?xml version="1.0"?>
@@ -260,7 +325,7 @@ class BlitzBriefTests(unittest.TestCase):
             ["https://elpais.com/opinion/2026-06-01/columna.html"],
         )
 
-    def test_elpais_google_news_skips_google_link_when_original_is_missing(self):
+    def test_elpais_google_news_decodes_google_link_when_original_is_missing(self):
         xml = """<?xml version="1.0"?>
         <rss><channel><title>Google News</title>
           <item>
@@ -270,21 +335,39 @@ class BlitzBriefTests(unittest.TestCase):
           </item>
         </channel></rss>
         """
+        article_html = (
+            '<html><body><address><a href="/autor/manuel-jabois-sueiro/">'
+            "Manuel Jabois</a></address></body></html>"
+        )
 
-        with patch.object(bot, "_fetch_page", return_value=(xml, None)):
+        def fake_fetch(url):
+            if "news.google.com" in url:
+                return xml, None
+            return article_html, None
+
+        with patch.object(bot, "_fetch_page", side_effect=fake_fetch), \
+             patch.object(
+                 bot,
+                 "_decode_google_news_url",
+                 return_value="https://elpais.com/opinion/2026-06-01/columna.html",
+             ):
             articles = bot._fetch_elpais_google_news_articles(
                 "Manuel Jabois",
                 "manuel-jabois-sueiro",
                 datetime(2026, 6, 1, tzinfo=timezone.utc),
             )
 
-        self.assertEqual(articles, [])
+        self.assertEqual(len(articles), 1)
+        self.assertEqual(
+            articles[0]["url"],
+            "https://elpais.com/opinion/2026-06-01/columna.html",
+        )
 
     def test_elplural_uses_google_news_for_benjamin_prado(self):
         xml = """<?xml version="1.0"?>
         <rss><channel><title>Google News</title>
           <item>
-            <title>Benjamín Prado publica una nueva columna - El Plural</title>
+            <title>Una nueva columna - El Plural</title>
             <link>https://news.google.com/articles/ok</link>
             <description><![CDATA[<a href="https://www.elplural.com/opinion/benjamin-prado/columna.html">Ver</a>]]></description>
             <pubDate>Mon, 01 Jun 2026 10:00:00 +0000</pubDate>
@@ -302,7 +385,7 @@ class BlitzBriefTests(unittest.TestCase):
         self.assertEqual(len(articles), 1)
         self.assertEqual(
             articles[0]["title"],
-            "Benjamín Prado publica una nueva columna",
+            "Una nueva columna",
         )
         self.assertEqual(
             articles[0]["url"],
