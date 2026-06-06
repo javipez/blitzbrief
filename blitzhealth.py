@@ -9,7 +9,7 @@ Telegram. Guarda cada digest como markdown en digests/health/.
 Mismo patrón que elpais_telegram_bot.py: requests + ElementTree + Gemini REST.
 
 Uso:
-  pip install requests beautifulsoup4
+  pip install -r requirements.txt
   export TELEGRAM_BOT_TOKEN="..." TELEGRAM_CHAT_ID="..." GEMINI_API_KEY="..."
   python blitzhealth.py
 """
@@ -53,6 +53,15 @@ HEALTH_SOURCES: dict[str, str] = {
     "Layne Norton": "https://feeds.captivate.fm/the-dr-layne-norton-podcast/",
     "Steve Magness": "https://stevemagness.substack.com/feed",
 }
+
+
+def _ensure_aware_utc(dt: Optional[datetime]) -> Optional[datetime]:
+    """Devuelve una fecha comparable con `datetime.now(timezone.utc)`."""
+    if dt is None:
+        return None
+    if dt.tzinfo is None:
+        return dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc)
 
 # ---------------------------------------------------------------------------
 # Logging
@@ -164,11 +173,13 @@ def fetch_rss_articles(
         pub_date = None
         if pub_el is not None and pub_el.text:
             try:
-                pub_date = parsedate_to_datetime(pub_el.text)
+                pub_date = _ensure_aware_utc(parsedate_to_datetime(pub_el.text))
             except (ValueError, TypeError):
                 try:
-                    pub_date = datetime.fromisoformat(
-                        pub_el.text.replace("Z", "+00:00")
+                    pub_date = _ensure_aware_utc(
+                        datetime.fromisoformat(
+                            pub_el.text.replace("Z", "+00:00")
+                        )
                     )
                 except (ValueError, TypeError):
                     pass

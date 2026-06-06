@@ -17,7 +17,7 @@ Configuración:
      y las constantes TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID más abajo).
 
 Uso local:
-  pip install requests beautifulsoup4
+  pip install -r requirements.txt
   export TELEGRAM_BOT_TOKEN="tu_token"
   export TELEGRAM_CHAT_ID="tu_chat_id"
   python elpais_telegram_bot.py
@@ -284,6 +284,15 @@ def save_seen_articles(seen: list[str]) -> None:
 
 def article_hash(url: str) -> str:
     return hashlib.md5(url.encode()).hexdigest()
+
+
+def _ensure_aware_utc(dt: Optional[datetime]) -> Optional[datetime]:
+    """Devuelve una fecha comparable con `datetime.now(timezone.utc)`."""
+    if dt is None:
+        return None
+    if dt.tzinfo is None:
+        return dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc)
 
 
 # Sesiones HTTP reutilizables. El País bloquea peticiones sin cookies de
@@ -680,7 +689,7 @@ def _fetch_elpais_feed_articles(
             pub_text = item.findtext("pubDate")
             if pub_text:
                 try:
-                    pub_date = parsedate_to_datetime(pub_text)
+                    pub_date = _ensure_aware_utc(parsedate_to_datetime(pub_text))
                 except (ValueError, TypeError):
                     pass
             if not pub_date or pub_date < cutoff:
@@ -740,8 +749,10 @@ def _fetch_elpais_author_page_articles(
             datetime_attr = time_el.get("datetime", "")
             if datetime_attr:
                 try:
-                    pub_date = datetime.fromisoformat(
-                        datetime_attr.replace("Z", "+00:00")
+                    pub_date = _ensure_aware_utc(
+                        datetime.fromisoformat(
+                            datetime_attr.replace("Z", "+00:00")
+                        )
                     )
                 except ValueError:
                     pass
@@ -846,7 +857,7 @@ def _fetch_google_news_site_articles(
         pub_el = item.find("pubDate")
         if pub_el is not None and pub_el.text:
             try:
-                pub_date = parsedate_to_datetime(pub_el.text)
+                pub_date = _ensure_aware_utc(parsedate_to_datetime(pub_el.text))
             except (ValueError, TypeError):
                 pass
         if not pub_date or pub_date < cutoff:
@@ -992,7 +1003,7 @@ def _fetch_elplural_article_date(url: str) -> Optional[datetime]:
     meta = soup.select_one('meta[property="article:published_time"]')
     if meta and meta.get("content"):
         try:
-            return datetime.fromisoformat(meta["content"])
+            return _ensure_aware_utc(datetime.fromisoformat(meta["content"]))
         except ValueError:
             pass
     return None
@@ -1062,7 +1073,7 @@ def fetch_rss_articles(
         pub_date = None
         if pub_el is not None and pub_el.text:
             try:
-                pub_date = parsedate_to_datetime(pub_el.text)
+                pub_date = _ensure_aware_utc(parsedate_to_datetime(pub_el.text))
             except (ValueError, TypeError):
                 pass
 
@@ -1131,7 +1142,7 @@ def fetch_podcast_segments(
         pub_date = None
         if pub_el is not None and pub_el.text:
             try:
-                pub_date = parsedate_to_datetime(pub_el.text)
+                pub_date = _ensure_aware_utc(parsedate_to_datetime(pub_el.text))
             except (ValueError, TypeError):
                 pass
 
@@ -1322,6 +1333,7 @@ def fetch_news_headlines(max_per_source: int = 7) -> list[dict]:
             if pubdate_el is not None and pubdate_el.text:
                 try:
                     pub_dt = parsedate_to_datetime(pubdate_el.text)
+                    pub_dt = _ensure_aware_utc(pub_dt)
                     if pub_dt < cutoff:
                         continue
                 except Exception:
@@ -1355,6 +1367,7 @@ def fetch_news_headlines(max_per_source: int = 7) -> list[dict]:
                         pub_dt = datetime.fromisoformat(
                             updated_el.text.replace("Z", "+00:00")
                         )
+                        pub_dt = _ensure_aware_utc(pub_dt)
                         if pub_dt < cutoff:
                             continue
                     except Exception:
@@ -1963,6 +1976,7 @@ def run_digest(notify_empty: bool = False, mode: str = "morning") -> None:
     cutoff = datetime.now(timezone.utc) - timedelta(hours=LOOKBACK_HOURS)
     seen = load_seen_articles()
     seen_set = set(seen)          # set auxiliar para búsquedas O(1)
+    pending_hashes = set(seen_set)
     all_new_articles: list[dict] = []
     podcast_segments: list[dict] = []
     fetch_errors: list[str] = []
@@ -1973,24 +1987,30 @@ def run_digest(notify_empty: bool = False, mode: str = "morning") -> None:
             log.info(f"[El País] Consultando: {author_name} ({slug})")
             articles = fetch_elpais_articles(author_name, slug, cutoff, fetch_errors)
             for art in articles:
-                if article_hash(art["url"]) not in seen_set:
+                h = article_hash(art["url"])
+                if h not in pending_hashes:
                     all_new_articles.append(art)
+                    pending_hashes.add(h)
             log.info(f"  → {len(articles)} artículo(s) reciente(s)")
 
         for author_name, slug in ELPLURAL_AUTHORS.items():
             log.info(f"[El Plural] Consultando: {author_name} ({slug})")
             articles = fetch_elplural_articles(author_name, slug, cutoff, fetch_errors)
             for art in articles:
-                if article_hash(art["url"]) not in seen_set:
+                h = article_hash(art["url"])
+                if h not in pending_hashes:
                     all_new_articles.append(art)
+                    pending_hashes.add(h)
             log.info(f"  → {len(articles)} artículo(s) reciente(s)")
 
         for author_name, feed_url in RSS_AUTHORS.items():
             log.info(f"[RSS] Consultando: {author_name}")
             articles = fetch_rss_articles(author_name, feed_url, cutoff, fetch_errors)
             for art in articles:
-                if article_hash(art["url"]) not in seen_set:
+                h = article_hash(art["url"])
+                if h not in pending_hashes:
                     all_new_articles.append(art)
+                    pending_hashes.add(h)
             log.info(f"  → {len(articles)} artículo(s) reciente(s)")
 
     # ── Mañana: podcast (mensaje 3 — audio publicado de madrugada) ───
@@ -2005,8 +2025,12 @@ def run_digest(notify_empty: bool = False, mode: str = "morning") -> None:
                 label, feed_url, title_filter, cutoff, fetch_errors
             )
             for seg in segments:
-                if article_hash(seg["audio_url"]) not in seen_set:
+                if not seg.get("audio_url"):
+                    continue
+                h = article_hash(seg["audio_url"])
+                if h not in pending_hashes:
                     podcast_segments.append(seg)
+                    pending_hashes.add(h)
             log.info(f"  → {len(segments)} segmento(s) encontrado(s)")
 
     # ── Enviar artículos ─────────────────────────────────────────────

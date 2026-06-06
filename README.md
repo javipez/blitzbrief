@@ -74,7 +74,7 @@ Para probarlo manualmente: **Actions > BlitzBrief Daily Digest > Run workflow**.
 ### 4. Opción B: Ejecución local
 
 ```bash
-pip install requests beautifulsoup4
+pip install -r requirements.txt
 
 export TELEGRAM_BOT_TOKEN="tu_token"
 export TELEGRAM_CHAT_ID="tu_chat_id"

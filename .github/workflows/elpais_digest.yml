@@ -56,7 +56,7 @@ jobs:
           python-version: "3.12"
 
       - name: Install dependencies
-        run: pip install requests beautifulsoup4 curl_cffi
+        run: pip install -r requirements.txt
 
       - name: Determine run mode
         id: mode

@@ -227,6 +227,60 @@ class BlitzBriefTests(unittest.TestCase):
 
         self.assertEqual(saved_states, [])
 
+    def test_duplicate_article_urls_are_sent_once_per_run(self):
+        article = {
+            "title": "Misma columna",
+            "url": "https://example.com/a1",
+            "author": "Autor",
+            "source": "El Pais",
+            "date": datetime(2026, 3, 27, tzinfo=timezone.utc),
+            "subtitle": "",
+            "tag": "",
+        }
+        sent_messages = []
+        saved_states = []
+
+        with patch.dict(bot.ELPAIS_AUTHORS, {"Autor": "slug", "Autor 2": "slug2"}, clear=True), \
+             patch.dict(bot.ELPLURAL_AUTHORS, {}, clear=True), \
+             patch.dict(bot.RSS_AUTHORS, {}, clear=True), \
+             patch.dict(bot.PODCAST_SOURCES, {}, clear=True), \
+             patch.object(bot, "GEMINI_API_KEY", ""), \
+             patch.object(bot, "load_seen_articles", return_value=[]), \
+             patch.object(bot, "fetch_elpais_articles", return_value=[article]), \
+             patch.object(bot, "send_telegram_message", side_effect=lambda msg: sent_messages.append(msg) or True), \
+             patch.object(bot, "fetch_tomorrow_weather_block", return_value=""), \
+             patch.object(bot, "fetch_bitcoin_block", return_value=""), \
+             patch.object(bot, "save_seen_articles", side_effect=lambda seen: saved_states.append(list(seen))):
+            bot.run_digest(mode="evening")
+
+        self.assertEqual(len(sent_messages), 1)
+        self.assertEqual(sent_messages[0].count("Misma columna"), 1)
+        self.assertEqual(saved_states, [[bot.article_hash(article["url"])]])
+
+    def test_elplural_naive_article_date_is_comparable(self):
+        tag_html = """
+        <html><body>
+          <div class="item">
+            <h3><a href="/opinion/benjamin-prado/directa.html">Columna directa</a></h3>
+          </div>
+        </body></html>
+        """
+        article_html = """
+        <html><head>
+          <meta property="article:published_time" content="2026-06-01T10:00:00">
+        </head></html>
+        """
+
+        with patch.object(bot, "_fetch_page", side_effect=[(tag_html, None), (article_html, None)]):
+            articles = bot._fetch_elplural_tag_articles(
+                "Benjamín Prado",
+                "benjamin-prado",
+                datetime(2026, 6, 1, tzinfo=timezone.utc),
+            )
+
+        self.assertEqual([article["title"] for article in articles], ["Columna directa"])
+        self.assertEqual(articles[0]["date"].tzinfo, timezone.utc)
+
     def test_only_successful_podcast_sends_are_marked_seen(self):
         segments = [
             {
