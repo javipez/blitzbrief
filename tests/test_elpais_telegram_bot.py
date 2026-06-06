@@ -340,6 +340,36 @@ class BlitzBriefTests(unittest.TestCase):
 
         self.assertEqual(block, "📈 Bitcoin: 61.234 € (+4.2%)")
 
+    def test_all_briefing_sources_have_profiles(self):
+        all_sources = {**bot.NEWS_SOURCES, **bot.SPORTS_SOURCES}
+
+        missing = [
+            name for name in all_sources
+            if bot._source_profile(name)["orientation"] == "no clasificada"
+        ]
+
+        self.assertEqual(missing, [])
+
+    def test_news_headlines_include_source_profile(self):
+        xml = """<?xml version="1.0"?>
+        <rss><channel>
+          <item>
+            <title>Titular de prueba</title>
+            <description>Descripción</description>
+            <pubDate>Sun, 07 Jun 2026 00:30:00 +0000</pubDate>
+          </item>
+        </channel></rss>
+        """
+
+        with patch.dict(bot.NEWS_SOURCES, {"ABC": "feed"}, clear=True), \
+             patch.dict(bot.SPORTS_SOURCES, {}, clear=True), \
+             patch.object(bot, "_fetch_page", return_value=(xml, None)):
+            headlines = bot.fetch_news_headlines()
+
+        self.assertEqual(len(headlines), 1)
+        self.assertEqual(headlines[0]["profile"]["orientation"], "conservador / centro-derecha")
+        self.assertEqual(headlines[0]["profile"]["reliability"], "media-alta")
+
 
 if __name__ == "__main__":
     unittest.main()

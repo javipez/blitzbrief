@@ -13,11 +13,11 @@ Bot de Telegram que cada mañana te envía un **briefing de noticias generado co
 
 | Categoría | Medios |
 |-----------|--------|
-| Nacional | El País, eldiario.es, El Español, El Confidencial |
-| Internacional | The Guardian, New York Times |
+| Nacional | El País, eldiario.es, ABC, La Vanguardia, El Español, El Confidencial |
+| Internacional | El Orden Mundial, BBC Mundo, France 24 Español, The Guardian, New York Times |
 | Local (Málaga) | Diario Sur, Málaga Hoy, La Opinión de Málaga |
 | Deportes | Marca, Diario AS |
-| Tecnología | OpenAI Blog, 9to5Mac, Anthropic News |
+| Tecnología | OpenAI Blog, Google Developers Blog, Google Gemini Blog, 9to5Mac, Anthropic News |
 
 ## Comandos del bot
 

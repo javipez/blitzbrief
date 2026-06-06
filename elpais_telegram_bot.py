@@ -81,18 +81,205 @@ PODCAST_SOURCES: dict[str, dict] = {}
 NEWS_SOURCES: dict[str, str] = {
     "El País": "https://feeds.elpais.com/mrss-s/pages/ep/site/elpais.com/portada",
     "eldiario.es": "https://www.eldiario.es/rss/",
+    "ABC": "https://www.abc.es/rss/2.0/portada/",
+    "La Vanguardia": "https://www.lavanguardia.com/rss/home.xml",
     "Diario Sur": "https://www.diariosur.es/rss/2.0/",
     "La Opinión de Málaga": "https://www.laopiniondemalaga.es/rss/",
     "El Español": "https://www.elespanol.com/rss/",
     "Málaga Hoy": "https://www.malagahoy.es/rss/",
+    "El Orden Mundial": "https://elordenmundial.com/feed/",
+    "BBC Mundo": "https://feeds.bbci.co.uk/mundo/rss.xml",
+    "France 24 Español": "https://www.france24.com/es/rss",
     "The Guardian": "https://www.theguardian.com/world/rss",
     "New York Times": "https://rss.nytimes.com/services/xml/rss/nyt/World.xml",
     "Marca": "https://e00-marca.uecdn.es/rss/portada.xml",
     "Diario AS": "https://feeds.as.com/mrss-s/pages/as/site/as.com/portada",
     "El Confidencial": "https://rss.elconfidencial.com/",
     "OpenAI Blog": "https://openai.com/blog/rss.xml",
+    "Google Developers Blog": "https://developers.googleblog.com/feeds/posts/default",
+    "Google Gemini Blog": "https://blog.google/products-and-platforms/products/gemini/rss/",
     "9to5Mac": "https://9to5mac.com/feed/",
     "Anthropic News": "https://raw.githubusercontent.com/taobojlen/anthropic-rss-feed/main/anthropic_news_rss.xml",
+}
+
+SOURCE_PROFILES: dict[str, dict] = {
+    "El País": {
+        "orientation": "centro-izquierda / progresista",
+        "reliability": "alta",
+        "sensationalism": "bajo-medio",
+        "scope": "nacional",
+        "type": "generalista",
+        "weight": 1.0,
+    },
+    "eldiario.es": {
+        "orientation": "izquierda / progresista",
+        "reliability": "media-alta",
+        "sensationalism": "medio",
+        "scope": "nacional",
+        "type": "generalista",
+        "weight": 0.95,
+    },
+    "ABC": {
+        "orientation": "conservador / centro-derecha",
+        "reliability": "media-alta",
+        "sensationalism": "medio",
+        "scope": "nacional",
+        "type": "generalista",
+        "weight": 0.9,
+    },
+    "La Vanguardia": {
+        "orientation": "centro / liberal moderado",
+        "reliability": "alta",
+        "sensationalism": "bajo-medio",
+        "scope": "nacional",
+        "type": "generalista",
+        "weight": 0.95,
+    },
+    "Diario Sur": {
+        "orientation": "localista / centro",
+        "reliability": "media-alta",
+        "sensationalism": "bajo-medio",
+        "scope": "local",
+        "type": "local",
+        "weight": 1.05,
+    },
+    "La Opinión de Málaga": {
+        "orientation": "localista / centro",
+        "reliability": "media",
+        "sensationalism": "medio",
+        "scope": "local",
+        "type": "local",
+        "weight": 0.9,
+    },
+    "El Español": {
+        "orientation": "centro-derecha / liberal",
+        "reliability": "media",
+        "sensationalism": "medio-alto",
+        "scope": "nacional",
+        "type": "generalista",
+        "weight": 0.85,
+    },
+    "Málaga Hoy": {
+        "orientation": "localista / centro",
+        "reliability": "media",
+        "sensationalism": "medio",
+        "scope": "local",
+        "type": "local",
+        "weight": 0.9,
+    },
+    "El Orden Mundial": {
+        "orientation": "análisis / internacionalista",
+        "reliability": "alta",
+        "sensationalism": "bajo",
+        "scope": "internacional",
+        "type": "análisis",
+        "weight": 1.1,
+    },
+    "BBC Mundo": {
+        "orientation": "institucional / internacional",
+        "reliability": "alta",
+        "sensationalism": "bajo",
+        "scope": "internacional",
+        "type": "generalista",
+        "weight": 1.0,
+    },
+    "France 24 Español": {
+        "orientation": "institucional / internacional",
+        "reliability": "alta",
+        "sensationalism": "bajo",
+        "scope": "internacional",
+        "type": "generalista",
+        "weight": 0.95,
+    },
+    "The Guardian": {
+        "orientation": "centro-izquierda / progresista",
+        "reliability": "alta",
+        "sensationalism": "bajo-medio",
+        "scope": "internacional",
+        "type": "generalista",
+        "weight": 0.9,
+    },
+    "New York Times": {
+        "orientation": "centro-izquierda / liberal",
+        "reliability": "alta",
+        "sensationalism": "bajo-medio",
+        "scope": "internacional",
+        "type": "generalista",
+        "weight": 0.9,
+    },
+    "Marca": {
+        "orientation": "deportivo",
+        "reliability": "media",
+        "sensationalism": "medio-alto",
+        "scope": "nacional",
+        "type": "deportivo",
+        "weight": 0.65,
+    },
+    "Diario AS": {
+        "orientation": "deportivo",
+        "reliability": "media",
+        "sensationalism": "medio-alto",
+        "scope": "nacional",
+        "type": "deportivo",
+        "weight": 0.65,
+    },
+    "El Confidencial": {
+        "orientation": "liberal / centro-derecha",
+        "reliability": "media-alta",
+        "sensationalism": "medio",
+        "scope": "nacional",
+        "type": "generalista",
+        "weight": 0.95,
+    },
+    "OpenAI Blog": {
+        "orientation": "fuente primaria / tecnológica",
+        "reliability": "alta",
+        "sensationalism": "bajo",
+        "scope": "tecnología",
+        "type": "fuente primaria",
+        "weight": 1.1,
+    },
+    "Google Developers Blog": {
+        "orientation": "fuente primaria / tecnológica",
+        "reliability": "alta",
+        "sensationalism": "bajo",
+        "scope": "tecnología",
+        "type": "fuente primaria",
+        "weight": 1.05,
+    },
+    "Google Gemini Blog": {
+        "orientation": "fuente primaria / tecnológica",
+        "reliability": "alta",
+        "sensationalism": "bajo",
+        "scope": "tecnología",
+        "type": "fuente primaria",
+        "weight": 1.1,
+    },
+    "9to5Mac": {
+        "orientation": "tecnológico / Apple",
+        "reliability": "media-alta",
+        "sensationalism": "medio",
+        "scope": "tecnología",
+        "type": "especializado",
+        "weight": 0.9,
+    },
+    "Anthropic News": {
+        "orientation": "fuente primaria / tecnológica",
+        "reliability": "alta",
+        "sensationalism": "bajo",
+        "scope": "tecnología",
+        "type": "fuente primaria",
+        "weight": 1.05,
+    },
+}
+
+DEFAULT_SOURCE_PROFILE: dict[str, object] = {
+    "orientation": "no clasificada",
+    "reliability": "media",
+    "sensationalism": "medio",
+    "scope": "nacional",
+    "type": "generalista",
+    "weight": 0.75,
 }
 
 ELPAIS_AUTHOR_FEEDS: tuple[str, ...] = (
@@ -148,6 +335,19 @@ SPORTS_SOURCES: dict[str, str] = {
     "AS Fútbol": "https://feeds.as.com/mrss-s/list/as/site/as.com/section/futbol",
     "AS Baloncesto": "https://feeds.as.com/mrss-s/list/as/site/as.com/section/baloncesto",
 }
+
+for _sports_source in SPORTS_SOURCES:
+    SOURCE_PROFILES.setdefault(
+        _sports_source,
+        {
+            "orientation": "deportivo",
+            "reliability": "media",
+            "sensationalism": "medio-alto",
+            "scope": "deportes",
+            "type": "deportivo",
+            "weight": 0.65,
+        },
+    )
 
 # Ligas ESPN a consultar para fútbol
 ESPN_FOOTBALL_LEAGUES: list[str] = [
@@ -415,6 +615,13 @@ def _limit_articles_per_author(articles: list[dict]) -> list[dict]:
         reverse=True,
     )
     return articles[:MAX_ARTICLES_PER_AUTHOR]
+
+
+def _source_profile(source_name: str) -> dict:
+    """Devuelve metadatos editoriales de una fuente del briefing."""
+    profile = DEFAULT_SOURCE_PROFILE.copy()
+    profile.update(SOURCE_PROFILES.get(source_name, {}))
+    return profile
 
 
 def _rss_item_matches_author(author_name: str, title: str, subtitle: str = "") -> bool:
@@ -1347,6 +1554,7 @@ def fetch_news_headlines(max_per_source: int = 7) -> list[dict]:
                 "source": source_name,
                 "title": title,
                 "description": desc,
+                "profile": _source_profile(source_name),
             })
             count += 1
 
@@ -1382,6 +1590,7 @@ def fetch_news_headlines(max_per_source: int = 7) -> list[dict]:
                     "source": source_name,
                     "title": title,
                     "description": desc,
+                    "profile": _source_profile(source_name),
                 })
                 count += 1
 
