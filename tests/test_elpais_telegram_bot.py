@@ -217,6 +217,8 @@ class BlitzBriefTests(unittest.TestCase):
              patch.dict(bot.RSS_AUTHORS, {}, clear=True), \
              patch.dict(bot.PODCAST_SOURCES, {}, clear=True), \
              patch.object(bot, "GEMINI_API_KEY", ""), \
+             patch.object(bot, "load_sent_runs", return_value={}), \
+             patch.object(bot, "save_sent_runs"), \
              patch.object(bot, "load_seen_articles", return_value=[]), \
              patch.object(bot, "fetch_elpais_articles", return_value=[article]), \
              patch.object(bot, "send_telegram_message", return_value=False), \
@@ -245,6 +247,8 @@ class BlitzBriefTests(unittest.TestCase):
              patch.dict(bot.RSS_AUTHORS, {}, clear=True), \
              patch.dict(bot.PODCAST_SOURCES, {}, clear=True), \
              patch.object(bot, "GEMINI_API_KEY", ""), \
+             patch.object(bot, "load_sent_runs", return_value={}), \
+             patch.object(bot, "save_sent_runs"), \
              patch.object(bot, "load_seen_articles", return_value=[]), \
              patch.object(bot, "fetch_elpais_articles", return_value=[article]), \
              patch.object(bot, "send_telegram_message", side_effect=lambda msg: sent_messages.append(msg) or True), \
@@ -307,6 +311,8 @@ class BlitzBriefTests(unittest.TestCase):
              patch.dict(bot.RSS_AUTHORS, {}, clear=True), \
              patch.dict(bot.PODCAST_SOURCES, {"Podcast": {"feed": "feed", "filter": "x"}}, clear=True), \
              patch.object(bot, "GEMINI_API_KEY", ""), \
+             patch.object(bot, "load_sent_runs", return_value={}), \
+             patch.object(bot, "save_sent_runs"), \
              patch.object(bot, "load_seen_articles", return_value=[]), \
              patch.object(bot, "fetch_podcast_segments", return_value=segments), \
              patch.object(bot, "fetch_weather_block", return_value=""), \
@@ -316,6 +322,29 @@ class BlitzBriefTests(unittest.TestCase):
 
         self.assertEqual(saved_states, [{first_hash}])
         self.assertNotIn(second_hash, saved_states[0])
+
+    def test_scheduled_digest_skips_when_already_sent_today(self):
+        key = bot.digest_run_key("morning")
+
+        with patch.object(bot, "load_sent_runs", return_value={key: True}), \
+             patch.object(bot, "send_news_briefing") as send_news:
+            bot.run_digest(mode="morning")
+
+        send_news.assert_not_called()
+
+    def test_scheduled_digest_marks_run_after_successful_send(self):
+        saved_runs = []
+
+        with patch.object(bot, "GEMINI_API_KEY", "key"), \
+             patch.object(bot, "load_sent_runs", return_value={}), \
+             patch.object(bot, "save_sent_runs", side_effect=lambda runs: saved_runs.append(dict(runs))), \
+             patch.object(bot, "send_news_briefing", return_value=True), \
+             patch.object(bot, "fetch_weather_block", return_value=""), \
+             patch.object(bot, "load_seen_articles", return_value=[]), \
+             patch.object(bot, "fetch_podcast_segments", return_value=[]):
+            bot.run_digest(mode="morning")
+
+        self.assertEqual(saved_runs, [{bot.digest_run_key("morning"): True}])
 
     def test_empty_digest_header_uses_madrid_timezone(self):
         with patch.object(bot, "datetime", FakeDateTime):

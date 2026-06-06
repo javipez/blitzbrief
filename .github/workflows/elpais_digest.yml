@@ -5,21 +5,24 @@
 #   Mañana → 1) Titulares (Gemini + partidos)  2) Tiempo actual  3) Audio Jabois
 #   Tarde  → 1) Artículos columnistas           2) Tiempo mañana  3) Bitcoin
 #
-# GitHub Actions usa UTC:
-#   5:17 UTC = 7:17 CEST (verano) / 6:17 CET (invierno)
-#  18:17 UTC = 20:17 CEST (verano) / 19:17 CET (invierno)
-# Usamos minuto 17 para evitar la cola típica del minuto 0. Mantenemos
-# las ventanas tempranas porque 7:17/19:17 UTC caía en horas-pico de
-# GHA y arrastraba retrasos de 1-4h.
+# GitHub Actions usa UTC y no garantiza puntualidad exacta: los cron se
+# ponen en cola y pueden retrasarse. Por eso disparamos varias veces por
+# franja y el script evita duplicados con .blitzbrief_sent_runs.json.
 
 name: BlitzBrief Daily Digest
 
 on:
   schedule:
-    # Mañana: 5:17 UTC → 7:17 verano / 6:17 invierno
-    - cron: "17 5 * * *"
-    # Tarde: 18:17 UTC → 20:17 verano / 19:17 invierno
-    - cron: "17 18 * * *"
+    # Mañana: varios intentos para absorber retrasos de GitHub Actions.
+    - cron: "37 4 * * *"
+    - cron: "7 5 * * *"
+    - cron: "37 5 * * *"
+    - cron: "7 6 * * *"
+    # Tarde: varios intentos para absorber retrasos de GitHub Actions.
+    - cron: "37 16 * * *"
+    - cron: "7 17 * * *"
+    - cron: "37 17 * * *"
+    - cron: "7 18 * * *"
 
   # Permite ejecución manual desde la pestaña Actions de GitHub
   workflow_dispatch:
@@ -45,7 +48,9 @@ jobs:
       - name: Restore seen articles cache
         uses: actions/cache@v4
         with:
-          path: .elpais_seen_articles.json
+          path: |
+            .elpais_seen_articles.json
+            .blitzbrief_sent_runs.json
           key: seen-articles-${{ github.run_id }}
           restore-keys: |
             seen-articles-
@@ -63,7 +68,7 @@ jobs:
         run: |
           if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
             echo "flag=--${{ github.event.inputs.mode }}" >> "$GITHUB_OUTPUT"
-          elif [ "${{ github.event.schedule }}" = "17 5 * * *" ]; then
+          elif [[ "${{ github.event.schedule }}" == *" 4 "* || "${{ github.event.schedule }}" == *" 5 "* || "${{ github.event.schedule }}" == *" 6 "* ]]; then
             echo "flag=--morning" >> "$GITHUB_OUTPUT"
           else
             echo "flag=--evening" >> "$GITHUB_OUTPUT"

@@ -315,6 +315,7 @@ BROWSER_HEADERS: dict[str, str] = {
 
 # Archivo local para evitar enviar duplicados entre ejecuciones
 SEEN_FILE = Path(__file__).parent / ".elpais_seen_articles.json"
+SENT_RUNS_FILE = Path(__file__).parent / ".blitzbrief_sent_runs.json"
 AUTHORS_FILE = Path(__file__).parent / "authors.json"
 
 # ── Equipos a seguir ───────────────────────────────────────────────
@@ -480,6 +481,35 @@ def load_seen_articles() -> list[str]:
 def save_seen_articles(seen: list[str]) -> None:
     """Guarda los hashes de artículos ya enviados (máx. 500, los más recientes)."""
     SEEN_FILE.write_text(json.dumps({"seen": seen[-500:]}))
+
+
+def load_sent_runs() -> dict[str, bool]:
+    """Carga los bloques diarios ya enviados, por ejemplo 2026-06-07:morning."""
+    if SENT_RUNS_FILE.exists():
+        try:
+            data = json.loads(SENT_RUNS_FILE.read_text(encoding="utf-8"))
+            runs = data.get("sent_runs", {})
+            return runs if isinstance(runs, dict) else {}
+        except (json.JSONDecodeError, OSError):
+            return {}
+    return {}
+
+
+def save_sent_runs(sent_runs: dict[str, bool]) -> None:
+    """Guarda los bloques diarios enviados, conservando solo los últimos 60."""
+    recent_items = list(sent_runs.items())[-60:]
+    SENT_RUNS_FILE.write_text(
+        json.dumps({"sent_runs": dict(recent_items)}, ensure_ascii=False, indent=2)
+        + "\n",
+        encoding="utf-8",
+    )
+
+
+def digest_run_key(mode: str, now: Optional[datetime] = None) -> str:
+    """Clave diaria para evitar duplicar envíos programados."""
+    local_now = now or datetime.now(ZoneInfo("Europe/Madrid"))
+    local_now = local_now.astimezone(ZoneInfo("Europe/Madrid"))
+    return f"{local_now.strftime('%Y-%m-%d')}:{mode}"
 
 
 def article_hash(url: str) -> str:
@@ -2169,18 +2199,29 @@ def run_digest(notify_empty: bool = False, mode: str = "morning") -> None:
         mode: "morning", "evening" o "full".
     """
     log.info(f"Iniciando BlitzBrief — modo {mode}...")
+    scheduled_mode = mode in ("morning", "evening")
+    sent_runs: dict[str, bool] = {}
+    run_key = ""
+    delivery_success = False
+
+    if scheduled_mode:
+        sent_runs = load_sent_runs()
+        run_key = digest_run_key(mode)
+        if sent_runs.get(run_key):
+            log.info(f"Bloque {run_key} ya enviado. Omitiendo duplicado.")
+            return
 
     # ── Mañana: mensaje 1 — Titulares ────────────────────────────────
     if mode in ("morning", "full"):
         if GEMINI_API_KEY:
-            send_news_briefing()
+            delivery_success = send_news_briefing() or delivery_success
         else:
             log.info("Sin GEMINI_API_KEY — briefing omitido.")
 
         # ── Mañana: mensaje 2 — Tiempo actual ────────────────────────
         weather = fetch_weather_block()
         if weather:
-            _send_plain_message(weather)
+            delivery_success = _send_plain_message(weather) or delivery_success
 
     cutoff = datetime.now(timezone.utc) - timedelta(hours=LOOKBACK_HOURS)
     seen = load_seen_articles()
@@ -2255,6 +2296,7 @@ def run_digest(notify_empty: bool = False, mode: str = "morning") -> None:
         )
         success = send_telegram_message(message)
         if success:
+            delivery_success = True
             for art in all_new_articles:
                 h = article_hash(art["url"])
                 seen.append(h)
@@ -2264,7 +2306,7 @@ def run_digest(notify_empty: bool = False, mode: str = "morning") -> None:
         log.info("No hay artículos nuevos.")
         if notify_empty:
             message = format_telegram_message([])
-            send_telegram_message(message)
+            delivery_success = send_telegram_message(message) or delivery_success
 
     # ── Enviar audios de podcast ─────────────────────────────────────
     for seg in podcast_segments:
@@ -2273,6 +2315,7 @@ def run_digest(notify_empty: bool = False, mode: str = "morning") -> None:
                 seg["audio_url"], seg["title"], seg.get("duration", "")
             )
             if audio_sent:
+                delivery_success = True
                 h = article_hash(seg["audio_url"])
                 seen.append(h)
                 seen_set.add(h)
@@ -2292,19 +2335,24 @@ def run_digest(notify_empty: bool = False, mode: str = "morning") -> None:
         error_lines.append(
             "_Revisa que las URLs de autor sigan siendo válidas\\._"
         )
-        send_telegram_message("\n".join(error_lines))
+        delivery_success = send_telegram_message("\n".join(error_lines)) or delivery_success
         log.warning(f"{len(fetch_errors)} fuente(s) con errores.")
 
     # ── Tarde: mensaje 2 — Tiempo de mañana ──────────────────────────
     if mode in ("evening", "full"):
         tomorrow = fetch_tomorrow_weather_block()
         if tomorrow:
-            _send_plain_message(tomorrow)
+            delivery_success = _send_plain_message(tomorrow) or delivery_success
 
         # ── Tarde: mensaje 3 — Bitcoin ────────────────────────────────
         bitcoin = fetch_bitcoin_block()
         if bitcoin:
-            _send_plain_message(bitcoin)
+            delivery_success = _send_plain_message(bitcoin) or delivery_success
+
+    if scheduled_mode and delivery_success:
+        sent_runs[run_key] = True
+        save_sent_runs(sent_runs)
+        log.info(f"Bloque {run_key} marcado como enviado.")
 
     log.info("Hecho.")
 

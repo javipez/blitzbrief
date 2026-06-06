@@ -3,4 +3,5 @@ __pycache__/
 .env
 .DS_Store
 .elpais_seen_articles.json
+.blitzbrief_sent_runs.json
 .claude/
