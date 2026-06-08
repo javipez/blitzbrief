@@ -283,6 +283,10 @@ DEFAULT_SOURCE_PROFILE: dict[str, object] = {
     "weight": 0.75,
 }
 
+RSS_FEED_FALLBACKS: dict[str, tuple[str, ...]] = {
+    "https://www.error500.net/feed": ("https://www.error500.net/feed.xml",),
+}
+
 INTEREST_KEYWORDS: dict[str, tuple[str, ...]] = {
     "Málaga": ("malaga", "malaga cf", "costa del sol"),
     "Andalucía": ("andalucia", "andaluz", "sevilla", "granada", "cordoba"),
@@ -633,13 +637,39 @@ def _fetch_page(url: str) -> tuple[Optional[str], Optional[str]]:
                 return None, err_str
         return None, "Reintentos agotados"
 
-    try:
-        resp = requests.get(url, headers=BROWSER_HEADERS, timeout=15)
-        resp.raise_for_status()
-        return _decoded_response_text(resp), None
-    except requests.RequestException as e:
-        log.warning(f"Error al descargar {url}: {e}")
-        return None, str(e)
+    urls_to_try = [url, *RSS_FEED_FALLBACKS.get(url, ())]
+    last_error = ""
+    for candidate_url in urls_to_try:
+        try:
+            resp = requests.get(candidate_url, headers=BROWSER_HEADERS, timeout=15)
+            resp.raise_for_status()
+            return _decoded_response_text(resp), None
+        except requests.RequestException as e:
+            last_error = str(e)
+            if "403" in last_error and HAS_CURL_CFFI:
+                try:
+                    resp = cffi_requests.get(  # type: ignore[union-attr]
+                        candidate_url,
+                        headers=BROWSER_HEADERS,
+                        timeout=15,
+                        impersonate="chrome120",
+                    )
+                    resp.raise_for_status()
+                    return _decoded_response_text(resp), None
+                except Exception as cffi_error:
+                    last_error = str(cffi_error)
+            if candidate_url != url:
+                log.warning(
+                    f"Error al descargar fallback {candidate_url}: {last_error}"
+                )
+            elif candidate_url in RSS_FEED_FALLBACKS:
+                log.info(
+                    f"Error al descargar {candidate_url}; probando fallback RSS..."
+                )
+            else:
+                log.warning(f"Error al descargar {candidate_url}: {last_error}")
+
+    return None, last_error
 
 
 def _decoded_response_text(resp) -> str:

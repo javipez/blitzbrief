@@ -200,6 +200,50 @@ class BlitzBriefTests(unittest.TestCase):
         self.assertEqual(len(articles), 1)
         self.assertEqual(articles[0]["title"], "Manuel Jabois firma su nueva columna")
 
+    def test_fetch_page_retries_403_with_curl_cffi(self):
+        class ForbiddenResponse:
+            encoding = "utf-8"
+            content = b""
+
+            def raise_for_status(self):
+                raise bot.requests.HTTPError("403 Client Error: Forbidden")
+
+        class OkResponse:
+            encoding = "utf-8"
+            content = b"<rss></rss>"
+
+            def raise_for_status(self):
+                return None
+
+        fake_cffi = type("FakeCffi", (), {"get": staticmethod(lambda *args, **kwargs: OkResponse())})
+
+        with patch.object(bot, "HAS_CURL_CFFI", True), \
+             patch.object(bot, "cffi_requests", fake_cffi), \
+             patch.object(bot.requests, "get", return_value=ForbiddenResponse()):
+            text, err = bot._fetch_page("https://example.com/feed")
+
+        self.assertEqual(text, "<rss></rss>")
+        self.assertIsNone(err)
+
+    def test_fetch_page_uses_configured_rss_fallback(self):
+        class Response:
+            encoding = "utf-8"
+
+            def __init__(self, url):
+                self.url = url
+                self.content = b"<rss></rss>" if url.endswith("feed.xml") else b""
+
+            def raise_for_status(self):
+                if not self.url.endswith("feed.xml"):
+                    raise bot.requests.HTTPError("403 Client Error: Forbidden")
+
+        with patch.object(bot, "HAS_CURL_CFFI", False), \
+             patch.object(bot.requests, "get", side_effect=lambda url, **kwargs: Response(url)):
+            text, err = bot._fetch_page("https://www.error500.net/feed")
+
+        self.assertEqual(text, "<rss></rss>")
+        self.assertIsNone(err)
+
     def test_articles_are_not_marked_seen_when_send_fails(self):
         article = {
             "title": "Titulo",
