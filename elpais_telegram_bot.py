@@ -33,6 +33,7 @@ import random
 import time
 import unicodedata
 import xml.etree.ElementTree as ET
+from html import escape as html_escape
 from urllib.parse import quote, urlparse
 from datetime import datetime, timedelta, timezone
 from email.utils import parsedate_to_datetime
@@ -2174,10 +2175,60 @@ def send_news_briefing() -> bool:
         fixtures_section = "\n\n📅 PARTIDOS HOY:\n" + "\n".join(fixtures)
 
     message = f"{header}\n\n{briefing}{fixtures_section}"
-    success = _send_plain_message(message)
+    html_message = _format_news_briefing_html(header, briefing, fixtures_section)
+    success = _send_html_message(html_message, fallback_text=message)
     if success:
         log.info("[Briefing] Enviado correctamente.")
     return success
+
+
+def _format_news_briefing_html(
+    header: str, briefing: str, fixtures_section: str = ""
+) -> str:
+    """Formatea el briefing en HTML seguro para Telegram."""
+    text = f"{header}\n\n{briefing}{fixtures_section}"
+    formatted_lines: list[str] = []
+    for line in text.splitlines():
+        stripped = line.lstrip()
+        indent = line[: len(line) - len(stripped)]
+        if stripped.startswith("Por qué importa:"):
+            reason = stripped.removeprefix("Por qué importa:").strip()
+            formatted_lines.append(
+                f"{html_escape(indent)}↳ <b>Por qué importa:</b> "
+                f"{html_escape(reason)}"
+            )
+        else:
+            formatted_lines.append(html_escape(line))
+    return "\n".join(formatted_lines)
+
+
+def _send_html_message(text: str, fallback_text: str = "") -> bool:
+    """Envía un mensaje HTML por Telegram y cae a texto plano si falla."""
+    if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
+        log.error("Falta TELEGRAM_BOT_TOKEN o TELEGRAM_CHAT_ID.")
+        return False
+    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
+    for chunk in _split_message(text, max_len=3000):
+        try:
+            resp = requests.post(
+                url,
+                json={
+                    "chat_id": TELEGRAM_CHAT_ID,
+                    "text": chunk,
+                    "parse_mode": "HTML",
+                    "disable_web_page_preview": True,
+                },
+                timeout=15,
+            )
+            resp.raise_for_status()
+            data = resp.json()
+            if not data.get("ok"):
+                log.error(f"[Telegram] Error HTML: {data}")
+                return _send_plain_message(fallback_text or text)
+        except requests.RequestException as e:
+            log.error(f"[Telegram] Error al enviar HTML: {e}")
+            return _send_plain_message(fallback_text or text)
+    return True
 
 
 def _send_plain_message(text: str) -> bool:

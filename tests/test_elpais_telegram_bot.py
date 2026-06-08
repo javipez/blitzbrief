@@ -392,6 +392,7 @@ class BlitzBriefTests(unittest.TestCase):
 
         with patch.dict(bot.NEWS_SOURCES, {"ABC": "feed"}, clear=True), \
              patch.dict(bot.SPORTS_SOURCES, {}, clear=True), \
+             patch.object(bot, "datetime", FakeDateTime), \
              patch.object(bot, "_fetch_page", return_value=(xml, None)):
             headlines = bot.fetch_news_headlines()
 
@@ -486,6 +487,15 @@ class BlitzBriefTests(unittest.TestCase):
         self.assertIn("por qué importa", captured["prompt"])
         self.assertIn("prioridad: 2.0", captured["prompt"])
         self.assertIn("ABC, El País", captured["prompt"])
+
+    def test_news_briefing_html_highlights_why_it_matters(self):
+        html = bot._format_news_briefing_html(
+            "📰 BRIEFING",
+            "🌍 Internacional: Test\n   Por qué importa: Afecta a <mercados>.",
+        )
+
+        self.assertIn("↳ <b>Por qué importa:</b> Afecta a", html)
+        self.assertIn("&lt;mercados&gt;.", html)
 
 
 if __name__ == "__main__":
