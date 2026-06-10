@@ -1338,7 +1338,7 @@ def fetch_elplural_articles(
     if direct_articles:
         return direct_articles
 
-    if errors is not None:
+    if errors is not None and direct_errors:
         errors.extend(google_errors)
         errors.extend(direct_errors)
     return []

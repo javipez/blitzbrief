@@ -146,6 +146,28 @@ class BlitzBriefTests(unittest.TestCase):
             "https://www.elplural.com/opinion/benjamin-prado/directa.html",
         )
 
+    def test_elplural_google_news_503_does_not_alert_when_direct_page_works(self):
+        direct_html = "<html><body></body></html>"
+        errors = []
+
+        with patch.object(
+            bot,
+            "_fetch_page",
+            side_effect=[
+                (None, "503 Server Error: Service Unavailable"),
+                (direct_html, None),
+            ],
+        ):
+            articles = bot.fetch_elplural_articles(
+                "Benjamín Prado",
+                "benjamin-prado",
+                datetime(2026, 6, 1, tzinfo=timezone.utc),
+                errors,
+            )
+
+        self.assertEqual(articles, [])
+        self.assertEqual(errors, [])
+
     def test_google_news_rss_filters_out_non_author_entries(self):
         xml = """<?xml version="1.0"?>
         <rss><channel><title>Google News</title>
