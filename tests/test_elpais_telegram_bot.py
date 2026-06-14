@@ -563,6 +563,78 @@ class BlitzBriefTests(unittest.TestCase):
         self.assertIn("↳ <b>Por qué importa:</b> Afecta a", html)
         self.assertIn("&lt;mercados&gt;.", html)
 
+    def test_news_briefing_rich_html_uses_structured_blocks(self):
+        html = bot._format_news_briefing_rich_html(
+            "📰 BRIEFING",
+            "🌍 Internacional: Test\n   Por qué importa: Afecta a <mercados>.",
+            "\n\n📅 PARTIDOS HOY:\nReal Madrid - Málaga",
+        )
+
+        self.assertIn("<h1>📰 BRIEFING</h1>", html)
+        self.assertIn("<h2>🌍 Internacional</h2>", html)
+        self.assertIn("<p>Test</p>", html)
+        self.assertIn("<blockquote><b>Por qué importa:</b> Afecta a &lt;mercados&gt;.</blockquote>", html)
+        self.assertIn("<details open><summary>Partidos de hoy</summary><ul>", html)
+        self.assertIn("<li>Real Madrid - Málaga</li>", html)
+
+    def test_send_rich_html_message_uses_send_rich_message_payload(self):
+        captured = {}
+
+        class FakeResponse:
+            def raise_for_status(self):
+                return None
+
+            def json(self):
+                return {"ok": True}
+
+        def fake_post(url, json, timeout):
+            captured["url"] = url
+            captured["json"] = json
+            captured["timeout"] = timeout
+            return FakeResponse()
+
+        with patch.object(bot, "TELEGRAM_BOT_TOKEN", "token"), \
+             patch.object(bot, "TELEGRAM_CHAT_ID", "123"), \
+             patch.object(bot.requests, "post", side_effect=fake_post):
+            sent = bot._send_rich_html_message("<h1>Briefing</h1>")
+
+        self.assertTrue(sent)
+        self.assertTrue(captured["url"].endswith("/sendRichMessage"))
+        self.assertEqual(captured["json"]["chat_id"], "123")
+        self.assertEqual(
+            captured["json"]["rich_message"],
+            {"html": "<h1>Briefing</h1>", "skip_entity_detection": True},
+        )
+        self.assertEqual(captured["timeout"], 15)
+
+    def test_send_rich_html_message_falls_back_to_html(self):
+        calls = []
+
+        class FakeResponse:
+            def raise_for_status(self):
+                return None
+
+            def json(self):
+                return {"ok": False, "description": "unsupported"}
+
+        def fake_post(url, json, timeout):
+            calls.append((url, json))
+            return FakeResponse()
+
+        with patch.object(bot, "TELEGRAM_BOT_TOKEN", "token"), \
+             patch.object(bot, "TELEGRAM_CHAT_ID", "123"), \
+             patch.object(bot.requests, "post", side_effect=fake_post), \
+             patch.object(bot, "_send_html_message", return_value=True) as send_html:
+            sent = bot._send_rich_html_message(
+                "<h1>Rich</h1>",
+                fallback_html="<b>HTML</b>",
+                fallback_text="plain",
+            )
+
+        self.assertTrue(sent)
+        self.assertEqual(len(calls), 1)
+        send_html.assert_called_once_with("<b>HTML</b>", fallback_text="plain")
+
 
 if __name__ == "__main__":
     unittest.main()

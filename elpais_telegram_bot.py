@@ -65,6 +65,7 @@ except ImportError:
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "")
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
+TELEGRAM_RICH_MAX_LEN = 32000
 
 # ── Autores (cargados desde authors.json) ─────────────────────────
 # El archivo authors.json contiene tres secciones:
@@ -2205,11 +2206,60 @@ def send_news_briefing() -> bool:
         fixtures_section = "\n\n📅 PARTIDOS HOY:\n" + "\n".join(fixtures)
 
     message = f"{header}\n\n{briefing}{fixtures_section}"
+    rich_message = _format_news_briefing_rich_html(header, briefing, fixtures_section)
     html_message = _format_news_briefing_html(header, briefing, fixtures_section)
-    success = _send_html_message(html_message, fallback_text=message)
+    success = _send_rich_html_message(
+        rich_message,
+        fallback_html=html_message,
+        fallback_text=message,
+    )
     if success:
         log.info("[Briefing] Enviado correctamente.")
     return success
+
+
+def _format_news_briefing_rich_html(
+    header: str, briefing: str, fixtures_section: str = ""
+) -> str:
+    """Formatea el briefing con bloques Rich Message de Telegram."""
+    blocks = [f"<h1>{html_escape(header)}</h1>"]
+
+    def append_briefing_line(line: str) -> None:
+        stripped = line.strip()
+        if not stripped:
+            return
+        if stripped.startswith("Por qué importa:"):
+            reason = stripped.removeprefix("Por qué importa:").strip()
+            blocks.append(
+                "<blockquote>"
+                f"<b>Por qué importa:</b> {html_escape(reason)}"
+                "</blockquote>"
+            )
+            return
+        if ":" in stripped and not stripped.startswith("http"):
+            title, body = stripped.split(":", 1)
+            blocks.append(f"<h2>{html_escape(title.strip())}</h2>")
+            if body.strip():
+                blocks.append(f"<p>{html_escape(body.strip())}</p>")
+            return
+        blocks.append(f"<p>{html_escape(stripped)}</p>")
+
+    for line in briefing.splitlines():
+        append_briefing_line(line)
+
+    fixture_lines = [
+        line.strip()
+        for line in fixtures_section.splitlines()
+        if line.strip() and "PARTIDOS HOY" not in line
+    ]
+    if fixture_lines:
+        blocks.append("<hr/>")
+        blocks.append("<details open><summary>Partidos de hoy</summary><ul>")
+        for fixture in fixture_lines:
+            blocks.append(f"<li>{html_escape(fixture)}</li>")
+        blocks.append("</ul></details>")
+
+    return "\n".join(blocks)
 
 
 def _format_news_briefing_html(
@@ -2230,6 +2280,42 @@ def _format_news_briefing_html(
         else:
             formatted_lines.append(html_escape(line))
     return "\n".join(formatted_lines)
+
+
+def _send_rich_html_message(
+    rich_html: str,
+    fallback_html: str = "",
+    fallback_text: str = "",
+) -> bool:
+    """Envía un Rich Message de Telegram y cae al envío HTML clásico si falla."""
+    if len(rich_html) > TELEGRAM_RICH_MAX_LEN:
+        log.warning("[Telegram] Rich Message demasiado largo; usando HTML clásico.")
+        return _send_html_message(fallback_html or rich_html, fallback_text=fallback_text)
+
+    if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
+        log.error("Falta TELEGRAM_BOT_TOKEN o TELEGRAM_CHAT_ID.")
+        return False
+
+    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendRichMessage"
+    payload = {
+        "chat_id": TELEGRAM_CHAT_ID,
+        "rich_message": {
+            "html": rich_html,
+            "skip_entity_detection": True,
+        },
+    }
+    try:
+        resp = requests.post(url, json=payload, timeout=15)
+        resp.raise_for_status()
+        data = resp.json()
+        if data.get("ok"):
+            log.info("[Telegram] Rich Message enviado correctamente.")
+            return True
+        log.error(f"[Telegram] Error Rich Message: {data}")
+    except requests.RequestException as e:
+        log.error(f"[Telegram] Error al enviar Rich Message: {e}")
+
+    return _send_html_message(fallback_html or rich_html, fallback_text=fallback_text)
 
 
 def _send_html_message(text: str, fallback_text: str = "") -> bool:

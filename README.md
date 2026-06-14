@@ -5,6 +5,7 @@ Bot de Telegram que cada mañana te envía un **briefing de noticias generado co
 ## Qué hace
 
 - **Briefing de noticias con IA** — Recoge titulares de 14 fuentes (nacionales, internacionales, locales y deportivas), los procesa con Gemini 2.5 Flash y te envía un resumen categorizado
+- **Formato enriquecido de Telegram** — El briefing usa Rich Messages cuando están disponibles, con fallback automático al formato HTML anterior
 - **Digest de columnistas** — Consulta las páginas de autor de El País, El Plural y feeds RSS para detectar artículos nuevos
 - **Podcasts** — Detecta segmentos de podcast por título y te envía el audio directamente en Telegram
 - **Alertas de errores** — Te avisa si alguna fuente falla
