@@ -287,7 +287,7 @@ class BlitzBriefTests(unittest.TestCase):
              patch.object(bot, "save_sent_runs"), \
              patch.object(bot, "load_seen_articles", return_value=[]), \
              patch.object(bot, "fetch_elpais_articles", return_value=[article]), \
-             patch.object(bot, "send_telegram_message", return_value=False), \
+             patch.object(bot, "send_articles_digest", return_value=False), \
              patch.object(bot, "fetch_tomorrow_weather_block", return_value=""), \
              patch.object(bot, "fetch_bitcoin_block", return_value=""), \
              patch.object(bot, "save_seen_articles", side_effect=lambda seen: saved_states.append(set(seen))):
@@ -305,7 +305,7 @@ class BlitzBriefTests(unittest.TestCase):
             "subtitle": "",
             "tag": "",
         }
-        sent_messages = []
+        sent_digests = []
         saved_states = []
 
         with patch.dict(bot.ELPAIS_AUTHORS, {"Autor": "slug", "Autor 2": "slug2"}, clear=True), \
@@ -317,14 +317,15 @@ class BlitzBriefTests(unittest.TestCase):
              patch.object(bot, "save_sent_runs"), \
              patch.object(bot, "load_seen_articles", return_value=[]), \
              patch.object(bot, "fetch_elpais_articles", return_value=[article]), \
-             patch.object(bot, "send_telegram_message", side_effect=lambda msg: sent_messages.append(msg) or True), \
+             patch.object(bot, "send_articles_digest", side_effect=lambda articles: sent_digests.append(articles) or True), \
              patch.object(bot, "fetch_tomorrow_weather_block", return_value=""), \
              patch.object(bot, "fetch_bitcoin_block", return_value=""), \
              patch.object(bot, "save_seen_articles", side_effect=lambda seen: saved_states.append(list(seen))):
             bot.run_digest(mode="evening")
 
-        self.assertEqual(len(sent_messages), 1)
-        self.assertEqual(sent_messages[0].count("Misma columna"), 1)
+        self.assertEqual(len(sent_digests), 1)
+        self.assertEqual(len(sent_digests[0]), 1)
+        self.assertEqual(sent_digests[0][0]["title"], "Misma columna")
         self.assertEqual(saved_states, [[bot.article_hash(article["url"])]])
 
     def test_elplural_naive_article_date_is_comparable(self):
@@ -418,6 +419,56 @@ class BlitzBriefTests(unittest.TestCase):
 
         self.assertIn(" 2 de ", message)
         self.assertNotIn(" 1 de ", message)
+
+    def test_articles_digest_rich_html_groups_authors_and_escapes_content(self):
+        articles = [
+            {
+                "title": "Titulo con <alerta>",
+                "url": "https://example.com/a?x=1&y=2",
+                "author": "Autor Uno",
+                "source": "El Pais",
+                "subtitle": "Entradilla con <detalle>",
+                "tag": "Opinion",
+            },
+            {
+                "title": "Segundo texto",
+                "url": "https://example.com/b",
+                "author": "Autor Uno",
+                "source": "El Pais",
+                "subtitle": "",
+                "tag": "",
+            },
+        ]
+
+        html = bot._format_articles_digest_rich_html(articles)
+
+        self.assertIn("<h1>📰 Tu prensa del día</h1>", html)
+        self.assertIn("<h2>✍️ Autor Uno (El Pais)</h2>", html)
+        self.assertIn('href="https://example.com/a?x=1&amp;y=2"', html)
+        self.assertIn("Titulo con &lt;alerta&gt;", html)
+        self.assertIn("<i>Entradilla con &lt;detalle&gt;</i>", html)
+        self.assertEqual(html.count("<li>"), 2)
+
+    def test_send_articles_digest_uses_rich_message_with_html_fallback(self):
+        article = {
+            "title": "Titulo",
+            "url": "https://example.com/a1",
+            "author": "Autor",
+            "source": "El Pais",
+            "subtitle": "Entradilla",
+            "tag": "Opinion",
+        }
+
+        with patch.object(bot, "_send_rich_html_message", return_value=True) as send_rich:
+            sent = bot.send_articles_digest([article])
+
+        self.assertTrue(sent)
+        args, kwargs = send_rich.call_args
+        self.assertIn("<h1>📰 Tu prensa del día</h1>", args[0])
+        self.assertIn("<h2>✍️ Autor (El Pais)</h2>", args[0])
+        self.assertIn("fallback_html", kwargs)
+        self.assertIn("fallback_text", kwargs)
+        self.assertIn("Titulo", kwargs["fallback_text"])
 
     def test_bitcoin_block_includes_price_and_change(self):
         class FakeResponse:

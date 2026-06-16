@@ -2402,6 +2402,14 @@ def _spanish_date(dt: datetime) -> str:
     return f"{days[dt.weekday()].capitalize()} {dt.day} de {months[dt.month - 1]} de {dt.year}"
 
 
+def _group_articles_by_author(all_articles: list[dict]) -> dict[str, list[dict]]:
+    """Agrupa artículos por autor conservando el orden de aparición."""
+    by_author: dict[str, list[dict]] = {}
+    for art in all_articles:
+        by_author.setdefault(art["author"], []).append(art)
+    return by_author
+
+
 def format_telegram_message(all_articles: list[dict]) -> str:
     """Formatea el mensaje de Telegram con Markdown."""
     now = datetime.now(ZoneInfo("Europe/Madrid"))
@@ -2409,12 +2417,7 @@ def format_telegram_message(all_articles: list[dict]) -> str:
 
     lines = [f"📰 *Tu prensa del día*", f"_{date_str}_", ""]
 
-    # Agrupar por autor
-    by_author: dict[str, list[dict]] = {}
-    for art in all_articles:
-        by_author.setdefault(art["author"], []).append(art)
-
-    for author, articles in by_author.items():
+    for author, articles in _group_articles_by_author(all_articles).items():
         source = articles[0].get("source", "")
         source_label = f" \\({_escape_md(source)}\\)" if source else ""
         lines.append(f"✍️ *{_escape_md(author)}*{source_label}")
@@ -2431,6 +2434,77 @@ def format_telegram_message(all_articles: list[dict]) -> str:
         lines.append("Hoy no hay artículos nuevos de tus autores\\. ¡Día libre\\! 📚")
 
     return "\n".join(lines)
+
+
+def _format_articles_digest_rich_html(all_articles: list[dict]) -> str:
+    """Formatea el digest de columnistas con bloques Rich Message."""
+    now = datetime.now(ZoneInfo("Europe/Madrid"))
+    date_str = _spanish_date(now)
+    blocks = [
+        "<h1>📰 Tu prensa del día</h1>",
+        f"<p><i>{html_escape(date_str)}</i></p>",
+    ]
+
+    if not all_articles:
+        blocks.append("<p>Hoy no hay artículos nuevos de tus autores. ¡Día libre! 📚</p>")
+        return "\n".join(blocks)
+
+    for author, articles in _group_articles_by_author(all_articles).items():
+        source = articles[0].get("source", "")
+        heading = html_escape(author)
+        if source:
+            heading += f" ({html_escape(source)})"
+        blocks.append(f"<h2>✍️ {heading}</h2>")
+        blocks.append("<ul>")
+        for art in articles:
+            title = html_escape(art["title"])
+            url = html_escape(art["url"], quote=True)
+            tag = f" <i>{html_escape(art['tag'])}</i>" if art.get("tag") else ""
+            subtitle = ""
+            if art.get("subtitle"):
+                subtitle = f"<br/><i>{html_escape(art['subtitle'][:160])}</i>"
+            blocks.append(f'<li><a href="{url}">{title}</a>{tag}{subtitle}</li>')
+        blocks.append("</ul>")
+
+    return "\n".join(blocks)
+
+
+def _format_articles_digest_html(all_articles: list[dict]) -> str:
+    """Formatea el digest de columnistas en HTML compatible con sendMessage."""
+    now = datetime.now(ZoneInfo("Europe/Madrid"))
+    date_str = _spanish_date(now)
+    lines = ["📰 <b>Tu prensa del día</b>", f"<i>{html_escape(date_str)}</i>", ""]
+
+    if not all_articles:
+        lines.append("Hoy no hay artículos nuevos de tus autores. ¡Día libre! 📚")
+        return "\n".join(lines)
+
+    for author, articles in _group_articles_by_author(all_articles).items():
+        source = articles[0].get("source", "")
+        source_label = f" ({html_escape(source)})" if source else ""
+        lines.append(f"✍️ <b>{html_escape(author)}</b>{source_label}")
+        for art in articles:
+            title = html_escape(art["title"])
+            url = html_escape(art["url"], quote=True)
+            tag = f" <i>{html_escape(art['tag'])}</i>" if art.get("tag") else ""
+            lines.append(f'  • <a href="{url}">{title}</a>{tag}')
+            if art.get("subtitle"):
+                lines.append(f"    <i>{html_escape(art['subtitle'][:120])}</i>")
+        lines.append("")
+
+    return "\n".join(lines)
+
+
+def send_articles_digest(all_articles: list[dict]) -> bool:
+    """Envía el digest de columnistas como Rich Message con fallback HTML."""
+    rich_message = _format_articles_digest_rich_html(all_articles)
+    html_message = _format_articles_digest_html(all_articles)
+    fallback_text = format_telegram_message(all_articles)
+    return _send_rich_html_message(
+        rich_message,
+        fallback_html=html_message,
+        fallback_text=fallback_text,
+    )
 
 
 def _escape_md(text: str) -> str:
@@ -2612,11 +2686,10 @@ def run_digest(notify_empty: bool = False, mode: str = "morning") -> None:
     )
 
     if all_new_articles:
-        message = format_telegram_message(all_new_articles)
         log.info(
             f"Encontrados {len(all_new_articles)} artículo(s) nuevo(s). Enviando..."
         )
-        success = send_telegram_message(message)
+        success = send_articles_digest(all_new_articles)
         if success:
             delivery_success = True
             for art in all_new_articles:
@@ -2627,8 +2700,7 @@ def run_digest(notify_empty: bool = False, mode: str = "morning") -> None:
     else:
         log.info("No hay artículos nuevos.")
         if notify_empty:
-            message = format_telegram_message([])
-            delivery_success = send_telegram_message(message) or delivery_success
+            delivery_success = send_articles_digest([]) or delivery_success
 
     # ── Enviar audios de podcast ─────────────────────────────────────
     for seg in podcast_segments:
