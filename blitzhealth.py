@@ -4,8 +4,7 @@
 
 Scrapea fuentes RSS de salud/fitness, autores y lecturas largas cada
 domingo, filtra contenido de los últimos 7 días, genera un resumen con
-Gemini y lo envía por Telegram. Guarda cada digest como markdown en
-digests/health/ por compatibilidad con el workflow anterior.
+Gemini y lo envía por Telegram.
 
 Mismo patrón que elpais_telegram_bot.py: requests + ElementTree + Gemini REST.
 
@@ -48,7 +47,6 @@ USER_AGENT = (
 )
 
 BASE_DIR = Path(__file__).parent
-DIGESTS_DIR = BASE_DIR / "digests" / "health"
 AUTHORS_FILE = BASE_DIR / "authors.json"
 
 # ── Fuentes RSS ───────────────────────────────────────────────────
@@ -444,28 +442,6 @@ LECTURAS LARGAS / CONTEXTO:
     return None
 
 
-def generate_health_digest(sources_data: dict[str, list[dict]]) -> Optional[str]:
-    """Compatibilidad: genera solo el bloque de salud si se llama directamente."""
-    return generate_weekend_digest(sources_data, [], [])
-
-
-# ---------------------------------------------------------------------------
-# Guardar digest como markdown
-# ---------------------------------------------------------------------------
-
-def save_digest_markdown(digest: str, date: datetime) -> Path:
-    """Guarda el digest en digests/health/YYYY-MM-DD.md."""
-    DIGESTS_DIR.mkdir(parents=True, exist_ok=True)
-    filename = date.strftime("%Y-%m-%d") + ".md"
-    filepath = DIGESTS_DIR / filename
-
-    header = f"# Blitz Weekend — Semana del {date.strftime('%d/%m/%Y')}\n\n"
-    filepath.write_text(header + digest, encoding="utf-8")
-
-    log.info(f"Digest guardado en {filepath}")
-    return filepath
-
-
 # ---------------------------------------------------------------------------
 # Telegram
 # ---------------------------------------------------------------------------
@@ -709,11 +685,7 @@ def main() -> None:
         )
         sys.exit(1)
 
-    # 3. Guardar como markdown
-    now = datetime.now(ZoneInfo("Europe/Madrid"))
-    save_digest_markdown(digest, now)
-
-    # 4. Enviar por Telegram
+    # 3. Enviar por Telegram
     success = send_telegram_digest(digest)
     if not success:
         log.error("Fallo al enviar por Telegram.")

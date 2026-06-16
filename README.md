@@ -101,7 +101,7 @@ authors.json             # Autores configurados (editable desde Telegram)
 ## Notas
 
 - El briefing usa **Gemini 2.5 Flash** (tier gratuito de Google AI Studio)
-- El digest dominical sigue ejecutándose con `blitzhealth.py`, pero el producto ya se presenta como **Blitz Weekend**
+- El digest dominical se ejecuta con `blitzhealth.py` y se envía como **Blitz Weekend** por Telegram
 - `.elpais_seen_articles.json` evita enviar duplicados
 - Si algún medio cambia su web, el parser puede necesitar ajustes (scraping HTML, no API oficial)
 - El script es respetuoso con los servidores: una petición por autor, sin concurrencia agresiva
