@@ -7,6 +7,7 @@ Bot de Telegram que cada mañana te envía un **briefing de noticias generado co
 - **Briefing de noticias con IA** — Recoge titulares de 14 fuentes (nacionales, internacionales, locales y deportivas), los procesa con Gemini 2.5 Flash y te envía un resumen categorizado
 - **Formato enriquecido de Telegram** — El briefing y el digest de columnistas usan Rich Messages cuando están disponibles, con fallback automático al formato HTML anterior
 - **Digest de columnistas** — Consulta las páginas de autor de El País, El Plural y feeds RSS para detectar artículos nuevos
+- **Blitz Weekend** — Cada domingo prepara un resumen semanal con salud/longevidad, columnas, lecturas largas y contexto
 - **Podcasts** — Detecta segmentos de podcast por título y te envía el audio directamente en Telegram
 - **Alertas de errores** — Te avisa si alguna fuente falla
 
@@ -92,6 +93,7 @@ python elpais_telegram_bot.py --serve
 
 ```
 elpais_telegram_bot.py   # Script principal (briefing IA + scraping + bot)
+blitzhealth.py           # Digest dominical Blitz Weekend
 authors.json             # Autores configurados (editable desde Telegram)
 .github/workflows/       # GitHub Actions para ejecución automática
 ```
@@ -99,6 +101,7 @@ authors.json             # Autores configurados (editable desde Telegram)
 ## Notas
 
 - El briefing usa **Gemini 2.5 Flash** (tier gratuito de Google AI Studio)
+- El digest dominical sigue ejecutándose con `blitzhealth.py`, pero el producto ya se presenta como **Blitz Weekend**
 - `.elpais_seen_articles.json` evita enviar duplicados
 - Si algún medio cambia su web, el parser puede necesitar ajustes (scraping HTML, no API oficial)
 - El script es respetuoso con los servidores: una petición por autor, sin concurrencia agresiva

@@ -1,10 +1,11 @@
 """
-🏋️ BlitzHealth — Digest semanal de salud y entrenamiento → Telegram
-====================================================================
+📚 Blitz Weekend — Digest semanal de lecturas → Telegram
+========================================================
 
-Scrapea fuentes RSS de salud/fitness cada domingo, filtra contenido
-de los últimos 7 días, genera un resumen con Gemini y lo envía por
-Telegram. Guarda cada digest como markdown en digests/health/.
+Scrapea fuentes RSS de salud/fitness, autores y lecturas largas cada
+domingo, filtra contenido de los últimos 7 días, genera un resumen con
+Gemini y lo envía por Telegram. Guarda cada digest como markdown en
+digests/health/ por compatibilidad con el workflow anterior.
 
 Mismo patrón que elpais_telegram_bot.py: requests + ElementTree + Gemini REST.
 
@@ -17,11 +18,12 @@ Uso:
 import os
 import sys
 import time
+import json
 import logging
 import xml.etree.ElementTree as ET
 from datetime import datetime, timedelta, timezone
 from email.utils import parsedate_to_datetime
-from html import unescape
+from html import escape as html_escape, unescape
 from pathlib import Path
 from typing import Optional
 from zoneinfo import ZoneInfo
@@ -38,13 +40,16 @@ TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "")
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
 
 LOOKBACK_DAYS = 7
+TELEGRAM_RICH_MAX_LEN = 32000
 
 USER_AGENT = (
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
     "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 )
 
-DIGESTS_DIR = Path(__file__).parent / "digests" / "health"
+BASE_DIR = Path(__file__).parent
+DIGESTS_DIR = BASE_DIR / "digests" / "health"
+AUTHORS_FILE = BASE_DIR / "authors.json"
 
 # ── Fuentes RSS ───────────────────────────────────────────────────
 HEALTH_SOURCES: dict[str, str] = {
@@ -52,6 +57,10 @@ HEALTH_SOURCES: dict[str, str] = {
     "Peter Attia": "https://peterattiamd.com/feed/",
     "Layne Norton": "https://feeds.captivate.fm/the-dr-layne-norton-podcast/",
     "Steve Magness": "https://stevemagness.substack.com/feed",
+}
+
+WEEKEND_LONGFORM_SOURCES: dict[str, str] = {
+    "El Orden Mundial": "https://elordenmundial.com/feed/",
 }
 
 
@@ -240,57 +249,158 @@ def fetch_all_sources(
     return result
 
 
+def _load_weekend_authors() -> dict[str, dict[str, str]]:
+    """Carga los autores configurados para incluir lecturas del fin de semana."""
+    if not AUTHORS_FILE.exists():
+        log.warning("No se encontró authors.json; se omiten autores del weekend.")
+        return {"elpais": {}, "elplural": {}, "rss": {}}
+    try:
+        data = json.loads(AUTHORS_FILE.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as e:
+        log.warning(f"No se pudo leer authors.json: {e}")
+        return {"elpais": {}, "elplural": {}, "rss": {}}
+    return {
+        "elpais": data.get("elpais", {}) or {},
+        "elplural": data.get("elplural", {}) or {},
+        "rss": data.get("rss", {}) or {},
+    }
+
+
+def fetch_weekend_author_articles(errors: Optional[list] = None) -> list[dict]:
+    """Recopila artículos semanales de autores del digest diario."""
+    import elpais_telegram_bot as press_bot
+
+    cutoff = datetime.now(timezone.utc) - timedelta(days=LOOKBACK_DAYS)
+    config = _load_weekend_authors()
+    articles: list[dict] = []
+
+    for author, slug in config["elpais"].items():
+        log.info(f"[Weekend autores] El País — {author}")
+        articles.extend(press_bot.fetch_elpais_articles(author, slug, cutoff, errors))
+
+    for author, slug in config["elplural"].items():
+        log.info(f"[Weekend autores] El Plural — {author}")
+        articles.extend(press_bot.fetch_elplural_articles(author, slug, cutoff, errors))
+
+    for author, feed_url in config["rss"].items():
+        log.info(f"[Weekend autores] RSS — {author}")
+        articles.extend(press_bot.fetch_rss_articles(author, feed_url, cutoff, errors))
+
+    articles.sort(
+        key=lambda art: art.get("date") or datetime.min.replace(tzinfo=timezone.utc),
+        reverse=True,
+    )
+    return articles[:12]
+
+
+def fetch_weekend_longform_articles(errors: Optional[list] = None) -> list[dict]:
+    """Recopila lecturas largas/análisis de la semana."""
+    cutoff = datetime.now(timezone.utc) - timedelta(days=LOOKBACK_DAYS)
+    articles: list[dict] = []
+    for source, feed_url in WEEKEND_LONGFORM_SOURCES.items():
+        log.info(f"[Weekend lecturas largas] {source}")
+        source_articles = fetch_rss_articles(source, feed_url, cutoff, errors)
+        for article in source_articles:
+            article["author"] = source
+            article["source"] = source
+        articles.extend(source_articles)
+
+    articles.sort(
+        key=lambda art: art.get("date") or datetime.min.replace(tzinfo=timezone.utc),
+        reverse=True,
+    )
+    return articles[:6]
+
+
 # ---------------------------------------------------------------------------
 # Gemini
 # ---------------------------------------------------------------------------
 
-def generate_health_digest(sources_data: dict[str, list[dict]]) -> Optional[str]:
-    """Envía el contenido semanal a Gemini para generar el digest."""
+def _format_articles_for_prompt(articles: list[dict]) -> str:
+    """Convierte una lista de artículos en bloque compacto para Gemini."""
+    if not articles:
+        return "Sin publicaciones detectadas esta semana.\n"
+
+    content = ""
+    for art in articles:
+        date_str = art["date"].strftime("%d/%m") if art.get("date") else "?"
+        content += f"\n[{date_str}] {art.get('author', art.get('source', 'Fuente'))}: {art['title']}\n"
+        content += f"Fuente: {art.get('source', '')}\n"
+        content += f"URL: {art['url']}\n"
+        if art.get("content"):
+            content += f"{art['content'][:1200]}\n"
+        elif art.get("subtitle"):
+            content += f"{art['subtitle'][:500]}\n"
+    return content
+
+
+def generate_weekend_digest(
+    health_data: dict[str, list[dict]],
+    author_articles: list[dict],
+    longform_articles: list[dict],
+) -> Optional[str]:
+    """Envía el contenido semanal a Gemini para generar Blitz Weekend."""
     if not GEMINI_API_KEY:
         log.error("Falta GEMINI_API_KEY.")
         return None
 
-    if not sources_data:
+    if not health_data and not author_articles and not longform_articles:
         log.info("Sin contenido nuevo esta semana, nada que resumir.")
         return None
 
     # Construir el bloque de contenido para el prompt
-    content_block = ""
-    for author, articles in sources_data.items():
-        content_block += f"\n== {author} ==\n"
+    health_block = ""
+    for author, articles in health_data.items():
+        health_block += f"\n== {author} ==\n"
         if not articles:
-            content_block += "Sin publicaciones detectadas esta semana.\n"
+            health_block += "Sin publicaciones detectadas esta semana.\n"
             continue
         for art in articles:
             date_str = art["date"].strftime("%d/%m") if art["date"] else "?"
-            content_block += f"\n[{date_str}] {art['title']}\n"
-            content_block += f"URL: {art['url']}\n"
+            health_block += f"\n[{date_str}] {art['title']}\n"
+            health_block += f"URL: {art['url']}\n"
             if art.get("content"):
-                content_block += f"{art['content'][:1500]}\n"
+                health_block += f"{art['content'][:1500]}\n"
             elif art.get("subtitle"):
-                content_block += f"{art['subtitle']}\n"
+                health_block += f"{art['subtitle']}\n"
 
     today = datetime.now(ZoneInfo("Europe/Madrid")).strftime("%d/%m/%Y")
 
-    prompt = f"""Hoy es {today}. Eres un editor especializado en salud, fitness y longevidad.
+    prompt = f"""Hoy es {today}. Eres el editor de Blitz Weekend, un digest dominical de lecturas para una persona que sigue actualidad, columnas, salud, longevidad, deporte, tecnología y análisis internacional.
 
-A partir del contenido publicado esta semana por estos autores de referencia, genera un digest semanal en español con esta estructura exacta:
+A partir del contenido publicado esta semana, genera un digest en español con esta estructura exacta:
 
-1. 📋 RESUMEN POR AUTOR
-Para cada autor que haya publicado algo, resume brevemente qué ha publicado (título + 1-2 frases sobre el contenido). Incluye el enlace a cada artículo/episodio.
+📚 PANORAMA SEMANAL
+3-5 líneas con los temas o lecturas que mejor resumen la semana. Nada genérico.
 
-2. 🎯 PUNTOS CLAVE ACCIONABLES
-Las 3-5 ideas más prácticas y aplicables de todo lo publicado esta semana. Cosas concretas que alguien puede hacer.
+🧠 SALUD / LONGEVIDAD
+Resume lo más importante de salud, fitness y longevidad. Incluye enlaces.
+
+🗞️ COLUMNAS Y AUTORES
+Selecciona las mejores lecturas de autores de la semana. No listes todo: prioriza 4-8 piezas. Incluye enlaces.
+
+🌍 LECTURAS LARGAS / CONTEXTO
+Resume análisis o textos largos relevantes. Incluye enlaces.
+
+🎯 IDEAS PARA QUEDARSE
+5 ideas prácticas o intelectuales para recordar esta semana.
 
 REGLAS:
 - Todo en español
-- Conciso pero completo
+- Conciso pero con criterio editorial
 - No uses asteriscos ni formato markdown con ** (usa texto plano con los emojis de sección)
 - No añadas introducción genérica ni cierre motivacional
-- Si un autor no ha publicado nada esta semana, indícalo brevemente
+- Si una sección no tiene material suficiente, déjala breve en vez de inventar.
+- Cada enlace debe ir en una línea URL: ...
 
-CONTENIDO DE LA SEMANA:
-{content_block}"""
+SALUD / FITNESS / LONGEVIDAD:
+{health_block}
+
+COLUMNAS Y AUTORES:
+{_format_articles_for_prompt(author_articles)}
+
+LECTURAS LARGAS / CONTEXTO:
+{_format_articles_for_prompt(longform_articles)}"""
 
     url = (
         "https://generativelanguage.googleapis.com/v1beta/models/"
@@ -334,6 +444,11 @@ CONTENIDO DE LA SEMANA:
     return None
 
 
+def generate_health_digest(sources_data: dict[str, list[dict]]) -> Optional[str]:
+    """Compatibilidad: genera solo el bloque de salud si se llama directamente."""
+    return generate_weekend_digest(sources_data, [], [])
+
+
 # ---------------------------------------------------------------------------
 # Guardar digest como markdown
 # ---------------------------------------------------------------------------
@@ -344,7 +459,7 @@ def save_digest_markdown(digest: str, date: datetime) -> Path:
     filename = date.strftime("%Y-%m-%d") + ".md"
     filepath = DIGESTS_DIR / filename
 
-    header = f"# BlitzHealth — Semana del {date.strftime('%d/%m/%Y')}\n\n"
+    header = f"# Blitz Weekend — Semana del {date.strftime('%d/%m/%Y')}\n\n"
     filepath.write_text(header + digest, encoding="utf-8")
 
     log.info(f"Digest guardado en {filepath}")
@@ -394,37 +509,152 @@ def send_telegram_text(text: str) -> bool:
         return False
 
 
+def _format_digest_rich_html(title: str, digest: str) -> str:
+    """Convierte el digest de texto en HTML para Rich Messages."""
+    blocks = [f"<h1>{html_escape(title)}</h1>"]
+    list_open = False
+
+    def close_list() -> None:
+        nonlocal list_open
+        if list_open:
+            blocks.append("</ul>")
+            list_open = False
+
+    for raw_line in digest.splitlines():
+        line = raw_line.strip()
+        if not line:
+            close_list()
+            continue
+
+        is_section = (
+            any(line.startswith(prefix) for prefix in ("📚", "🧠", "🗞️", "🌍", "🎯"))
+            and len(line) <= 80
+        )
+        if is_section:
+            close_list()
+            blocks.append(f"<h2>{html_escape(line)}</h2>")
+            continue
+
+        if line.startswith(("URL: http://", "URL: https://")):
+            close_list()
+            url = line.removeprefix("URL:").strip()
+            safe_url = html_escape(url, quote=True)
+            blocks.append(f'<p><a href="{safe_url}">Leer fuente</a></p>')
+            continue
+
+        is_bullet = line.startswith(("- ", "• ")) or (
+            len(line) > 3 and line[0].isdigit() and line[1:3] in (". ", ") ")
+        )
+        if is_bullet:
+            if not list_open:
+                blocks.append("<ul>")
+                list_open = True
+            item = line[2:].strip() if line[:2] in ("- ", "• ") else line[3:].strip()
+            blocks.append(f"<li>{html_escape(item)}</li>")
+            continue
+
+        close_list()
+        blocks.append(f"<p>{html_escape(line)}</p>")
+
+    close_list()
+    return "\n".join(blocks)
+
+
+def _format_digest_html(title: str, digest: str) -> str:
+    """Convierte el digest a HTML compatible con sendMessage."""
+    lines = [f"<b>{html_escape(title)}</b>", ""]
+    for raw_line in digest.splitlines():
+        line = raw_line.strip()
+        if line.startswith(("URL: http://", "URL: https://")):
+            url = line.removeprefix("URL:").strip()
+            safe_url = html_escape(url, quote=True)
+            lines.append(f'<a href="{safe_url}">Leer fuente</a>')
+        else:
+            lines.append(html_escape(raw_line))
+    return "\n".join(lines)
+
+
+def _send_html_message(text: str, fallback_text: str = "") -> bool:
+    """Envía HTML clásico por Telegram y cae a texto plano si falla."""
+    if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
+        log.error("Falta TELEGRAM_BOT_TOKEN o TELEGRAM_CHAT_ID.")
+        return False
+
+    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
+    for chunk in _split_message(text, max_len=3000):
+        try:
+            resp = requests.post(
+                url,
+                json={
+                    "chat_id": TELEGRAM_CHAT_ID,
+                    "text": chunk,
+                    "parse_mode": "HTML",
+                    "disable_web_page_preview": True,
+                },
+                timeout=15,
+            )
+            resp.raise_for_status()
+            data = resp.json()
+            if not data.get("ok"):
+                log.error(f"Error HTML de Telegram: {data}")
+                return send_telegram_text(fallback_text or text)
+        except requests.RequestException as e:
+            log.error(f"Error al enviar HTML a Telegram: {e}")
+            return send_telegram_text(fallback_text or text)
+    return True
+
+
+def _send_rich_html_message(
+    rich_html: str,
+    fallback_html: str = "",
+    fallback_text: str = "",
+) -> bool:
+    """Envía Rich Message y cae al HTML clásico si Telegram lo rechaza."""
+    if len(rich_html) > TELEGRAM_RICH_MAX_LEN:
+        log.warning("Rich Message demasiado largo; usando HTML clásico.")
+        return _send_html_message(fallback_html or rich_html, fallback_text)
+
+    if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
+        log.error("Falta TELEGRAM_BOT_TOKEN o TELEGRAM_CHAT_ID.")
+        return False
+
+    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendRichMessage"
+    payload = {
+        "chat_id": TELEGRAM_CHAT_ID,
+        "rich_message": {
+            "html": rich_html,
+            "skip_entity_detection": True,
+        },
+    }
+    try:
+        resp = requests.post(url, json=payload, timeout=15)
+        resp.raise_for_status()
+        data = resp.json()
+        if data.get("ok"):
+            log.info("Digest enviado correctamente como Rich Message.")
+            return True
+        log.error(f"Error Rich Message de Telegram: {data}")
+    except requests.RequestException as e:
+        log.error(f"Error al enviar Rich Message a Telegram: {e}")
+
+    return _send_html_message(fallback_html or rich_html, fallback_text)
+
+
 def send_telegram_digest(digest: str) -> bool:
-    """Envía el digest por Telegram como texto plano."""
+    """Envía el digest por Telegram como Rich Message con fallback."""
     if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
         log.error("Falta TELEGRAM_BOT_TOKEN o TELEGRAM_CHAT_ID.")
         return False
 
     now = datetime.now(ZoneInfo("Europe/Madrid"))
     date_str = now.strftime("%d/%m/%Y")
-    message = f"🏋️ BLITZHEALTH — Semana del {date_str}\n\n{digest}"
-
-    success = True
-    for chunk in _split_message(message, max_len=3000):
-        url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
-        payload = {
-            "chat_id": TELEGRAM_CHAT_ID,
-            "text": chunk,
-        }
-        try:
-            resp = requests.post(url, json=payload, timeout=15)
-            resp.raise_for_status()
-            data = resp.json()
-            if not data.get("ok"):
-                log.error(f"Error de Telegram: {data}")
-                success = False
-        except requests.RequestException as e:
-            log.error(f"Error al enviar: {e}")
-            success = False
-
-    if success:
-        log.info("Digest enviado correctamente a Telegram.")
-    return success
+    title = f"📚 BLITZ WEEKEND — Semana del {date_str}"
+    message = f"{title}\n\n{digest}"
+    return _send_rich_html_message(
+        _format_digest_rich_html(title, digest),
+        fallback_html=_format_digest_html(title, digest),
+        fallback_text=message,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -432,23 +662,27 @@ def send_telegram_digest(digest: str) -> bool:
 # ---------------------------------------------------------------------------
 
 def main() -> None:
-    log.info("=== BlitzHealth — Digest semanal ===")
+    log.info("=== Blitz Weekend — Digest semanal ===")
 
     # 1. Scrapear fuentes
     fetch_errors: list[str] = []
-    sources_data = fetch_all_sources(fetch_errors)
+    health_data = fetch_all_sources(fetch_errors)
+    author_articles = fetch_weekend_author_articles(fetch_errors)
+    longform_articles = fetch_weekend_longform_articles(fetch_errors)
 
-    total = sum(len(arts) for arts in sources_data.values())
-    authors_with_content = sum(1 for arts in sources_data.values() if arts)
+    health_total = sum(len(arts) for arts in health_data.values())
+    authors_with_content = sum(1 for arts in health_data.values() if arts)
     log.info(
-        f"Total: {total} artículos/episodios de "
-        f"{authors_with_content}/{len(sources_data)} autores."
+        f"Salud: {health_total} artículos/episodios de "
+        f"{authors_with_content}/{len(health_data)} autores."
     )
+    log.info(f"Autores: {len(author_articles)} artículos semanales.")
+    log.info(f"Lecturas largas: {len(longform_articles)} artículos semanales.")
 
     # Si TODAS las fuentes fallaron / vinieron vacías, mejor avisar a
     # Telegram que quedarse callado un domingo entero.
-    if not any(sources_data.values()):
-        msg = "⚠️ BlitzHealth: ninguna fuente devolvió contenido esta semana."
+    if not any(health_data.values()) and not author_articles and not longform_articles:
+        msg = "⚠️ Blitz Weekend: ninguna fuente devolvió contenido esta semana."
         if fetch_errors:
             msg += "\n\nFuentes con error:\n" + "\n".join(
                 f"• {e}" for e in fetch_errors
@@ -461,12 +695,16 @@ def main() -> None:
 
     # 2. Generar digest con Gemini
     log.info("Generando digest con Gemini...")
-    digest = generate_health_digest(sources_data)
+    digest = generate_weekend_digest(
+        health_data,
+        author_articles,
+        longform_articles,
+    )
 
     if not digest:
         log.warning("No se pudo generar el digest. Abortando.")
         send_telegram_text(
-            "⚠️ BlitzHealth: Gemini no respondió tras 3 intentos. "
+            "⚠️ Blitz Weekend: Gemini no respondió tras 3 intentos. "
             "Sin digest esta semana."
         )
         sys.exit(1)
@@ -481,7 +719,7 @@ def main() -> None:
         log.error("Fallo al enviar por Telegram.")
         sys.exit(1)
 
-    log.info("=== BlitzHealth completado ===")
+    log.info("=== Blitz Weekend completado ===")
 
 
 if __name__ == "__main__":
