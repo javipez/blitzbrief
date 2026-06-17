@@ -1,4 +1,4 @@
-# .github/workflows/elpais_digest.yml
+# .github/workflows/blitzbrief_digest.yml
 #
 # Ejecuta el bot dos veces al día (hora de España peninsular):
 # Estructura de mensajes:
@@ -49,6 +49,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: |
+            .blitzbrief_seen_articles.json
             .elpais_seen_articles.json
             .blitzbrief_sent_runs.json
           key: seen-articles-${{ github.run_id }}
@@ -79,4 +80,4 @@ jobs:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-        run: python elpais_telegram_bot.py ${{ steps.mode.outputs.flag }}
+        run: python blitzbrief_bot.py ${{ steps.mode.outputs.flag }}

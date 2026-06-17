@@ -20,7 +20,7 @@ Uso local:
   pip install -r requirements.txt
   export TELEGRAM_BOT_TOKEN="tu_token"
   export TELEGRAM_CHAT_ID="tu_chat_id"
-  python elpais_telegram_bot.py
+  python blitzbrief_bot.py
 """
 
 import os
@@ -344,7 +344,8 @@ BROWSER_HEADERS: dict[str, str] = {
 }
 
 # Archivo local para evitar enviar duplicados entre ejecuciones
-SEEN_FILE = Path(__file__).parent / ".elpais_seen_articles.json"
+SEEN_FILE = Path(__file__).parent / ".blitzbrief_seen_articles.json"
+LEGACY_SEEN_FILE = Path(__file__).parent / ".elpais_seen_articles.json"
 SENT_RUNS_FILE = Path(__file__).parent / ".blitzbrief_sent_runs.json"
 AUTHORS_FILE = Path(__file__).parent / "authors.json"
 
@@ -499,9 +500,10 @@ def remove_author(name: str) -> str:
 
 def load_seen_articles() -> list[str]:
     """Carga los hashes de artículos ya enviados (preservando orden)."""
-    if SEEN_FILE.exists():
+    seen_file = SEEN_FILE if SEEN_FILE.exists() else LEGACY_SEEN_FILE
+    if seen_file.exists():
         try:
-            data = json.loads(SEEN_FILE.read_text())
+            data = json.loads(seen_file.read_text())
             return list(data.get("seen", []))
         except (json.JSONDecodeError, KeyError):
             return []
@@ -783,6 +785,64 @@ def _why_headline_matters(headline: dict, source_count: int) -> str:
     if profile.get("type") == "fuente primaria":
         return "Es una novedad de una fuente primaria tecnológica."
     return "Es una noticia relevante dentro de su sección."
+
+
+def _is_tech_headline(headline: dict) -> bool:
+    profile = headline.get("profile") or _source_profile(headline.get("source", ""))
+    if profile.get("scope") == "tecnología":
+        return True
+    tech_interests = {"IA", "OpenAI", "Gemini", "Google", "Apple", "Anthropic"}
+    return bool(tech_interests & set(_matched_interests(headline)))
+
+
+def _briefing_text_matches_headline(text: str, headline: dict) -> bool:
+    response_tokens = _briefing_tokens(text)
+    headline_tokens = _briefing_tokens(
+        f"{headline.get('title', '')} {headline.get('description', '')}"
+    )
+    if not response_tokens or not headline_tokens:
+        return False
+    overlap = response_tokens & headline_tokens
+    return len(overlap) >= 3 or (
+        len(overlap) >= 2
+        and len(overlap) / min(len(response_tokens), len(headline_tokens)) >= 0.5
+    )
+
+
+def _filter_ungrounded_tech_section(briefing: str, headlines: list[dict]) -> str:
+    """Elimina Tech si Gemini no lo fundamenta en un titular tech actual."""
+    tech_headlines = [headline for headline in headlines if _is_tech_headline(headline)]
+    filtered_lines: list[str] = []
+    lines = briefing.splitlines()
+    index = 0
+
+    while index < len(lines):
+        line = lines[index]
+        if line.lstrip().startswith("🤖 Tech:"):
+            block_lines = [line]
+            next_index = index + 1
+            if next_index < len(lines) and "Por qué importa:" in lines[next_index]:
+                block_lines.append(lines[next_index])
+                next_index += 1
+
+            tech_text = "\n".join(block_lines)
+            if any(
+                _briefing_text_matches_headline(tech_text, headline)
+                for headline in tech_headlines
+            ):
+                filtered_lines.extend(block_lines)
+            else:
+                log.warning(
+                    "[Briefing] Bloque Tech eliminado: "
+                    "no coincide con titulares tech actuales."
+                )
+            index = next_index
+            continue
+
+        filtered_lines.append(line)
+        index += 1
+
+    return "\n".join(filtered_lines).strip()
 
 
 def curate_news_headlines(headlines: list[dict], max_items: int = 45) -> list[dict]:
@@ -1731,6 +1791,7 @@ def fetch_news_headlines(max_per_source: int = 7) -> list[dict]:
                 continue
             # Filtrar por fecha: descartar artículos de más de 24h
             pubdate_el = item.find("pubDate")
+            pub_dt = None
             if pubdate_el is not None and pubdate_el.text:
                 try:
                     pub_dt = parsedate_to_datetime(pubdate_el.text)
@@ -1744,10 +1805,14 @@ def fetch_news_headlines(max_per_source: int = 7) -> list[dict]:
             if desc_el is not None and desc_el.text:
                 desc = BeautifulSoup(desc_el.text, "html.parser").get_text(strip=True)
                 desc = desc[:200]
+            link_el = item.find("link")
+            url = link_el.text.strip() if link_el is not None and link_el.text else ""
             headlines.append({
                 "source": source_name,
                 "title": title,
                 "description": desc,
+                "url": url,
+                "published_at": pub_dt.isoformat() if pub_dt else "",
                 "profile": _source_profile(source_name),
             })
             count += 1
@@ -1764,6 +1829,7 @@ def fetch_news_headlines(max_per_source: int = 7) -> list[dict]:
                     continue
                 # Filtrar por fecha en feeds Atom
                 updated_el = entry.find("atom:updated", ns)
+                pub_dt = None
                 if updated_el is not None and updated_el.text:
                     try:
                         pub_dt = datetime.fromisoformat(
@@ -1780,10 +1846,16 @@ def fetch_news_headlines(max_per_source: int = 7) -> list[dict]:
                     desc = BeautifulSoup(
                         summary_el.text, "html.parser"
                     ).get_text(strip=True)[:200]
+                link_el = entry.find("atom:link", ns)
+                url = ""
+                if link_el is not None:
+                    url = (link_el.get("href") or "").strip()
                 headlines.append({
                     "source": source_name,
                     "title": title,
                     "description": desc,
+                    "url": url,
+                    "published_at": pub_dt.isoformat() if pub_dt else "",
                     "profile": _source_profile(source_name),
                 })
                 count += 1
@@ -2073,6 +2145,10 @@ def generate_news_briefing(headlines: list[dict]) -> Optional[str]:
         headlines_text += f"[{sources}] {h['title']}"
         if h.get("description"):
             headlines_text += f" — {h['description']}"
+        if h.get("published_at"):
+            headlines_text += f" | publicado: {h['published_at']}"
+        if h.get("url"):
+            headlines_text += f" | enlace: {h['url']}"
         if score:
             headlines_text += f" | prioridad: {score}"
         if why:
@@ -2153,7 +2229,7 @@ TITULARES (única fuente válida):
             if candidates:
                 parts = candidates[0].get("content", {}).get("parts", [])
                 if parts and parts[0].get("text"):
-                    return parts[0]["text"]
+                    return _filter_ungrounded_tech_section(parts[0]["text"], headlines)
             log.error(f"[Briefing] Respuesta inesperada de Gemini: {data}")
         except requests.RequestException as e:
             log.error(f"[Briefing] Error al llamar a Gemini API (intento {attempt + 1}): {e}")

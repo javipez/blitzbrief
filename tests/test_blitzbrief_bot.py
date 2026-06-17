@@ -2,7 +2,7 @@ import unittest
 from datetime import datetime, timezone
 from unittest.mock import patch
 
-import elpais_telegram_bot as bot
+import blitzbrief_bot as bot
 
 
 class FakeDateTime(datetime):
@@ -516,6 +516,26 @@ class BlitzBriefTests(unittest.TestCase):
         self.assertEqual(len(headlines), 1)
         self.assertEqual(headlines[0]["profile"]["orientation"], "conservador / centro-derecha")
         self.assertEqual(headlines[0]["profile"]["reliability"], "media-alta")
+        self.assertEqual(headlines[0]["published_at"], "2026-06-07T00:30:00+00:00")
+
+    def test_news_headlines_include_link(self):
+        xml = """<?xml version="1.0"?>
+        <rss><channel>
+          <item>
+            <title>Titular de prueba</title>
+            <link>https://example.com/noticia</link>
+            <pubDate>Sun, 07 Jun 2026 00:30:00 +0000</pubDate>
+          </item>
+        </channel></rss>
+        """
+
+        with patch.dict(bot.NEWS_SOURCES, {"ABC": "feed"}, clear=True), \
+             patch.dict(bot.SPORTS_SOURCES, {}, clear=True), \
+             patch.object(bot, "datetime", FakeDateTime), \
+             patch.object(bot, "_fetch_page", return_value=(xml, None)):
+            headlines = bot.fetch_news_headlines()
+
+        self.assertEqual(headlines[0]["url"], "https://example.com/noticia")
 
     def test_curate_news_headlines_groups_duplicate_titles(self):
         headlines = [
@@ -604,6 +624,86 @@ class BlitzBriefTests(unittest.TestCase):
         self.assertIn("por qué importa", captured["prompt"])
         self.assertIn("prioridad: 2.0", captured["prompt"])
         self.assertIn("ABC, El País", captured["prompt"])
+
+    def test_generate_news_briefing_filters_ungrounded_tech_block(self):
+        class FakeResponse:
+            def raise_for_status(self):
+                return None
+
+            def json(self):
+                return {
+                    "candidates": [
+                        {
+                            "content": {
+                                "parts": [
+                                    {
+                                        "text": (
+                                            "🏛 España: El Gobierno aprueba una nueva ley.\n"
+                                            "   Por qué importa: Afecta a la vivienda.\n"
+                                            "🤖 Tech: Google lanza Gemma 4 12B para laptops.\n"
+                                            "   Por qué importa: Lleva IA local a portátiles."
+                                        )
+                                    }
+                                ]
+                            }
+                        }
+                    ]
+                }
+
+        headlines = [
+            {
+                "source": "ABC",
+                "title": "El Gobierno aprueba una nueva ley de vivienda",
+                "description": "",
+                "profile": bot._source_profile("ABC"),
+            }
+        ]
+
+        with patch.object(bot, "GEMINI_API_KEY", "key"), \
+             patch.object(bot.requests, "post", return_value=FakeResponse()):
+            result = bot.generate_news_briefing(headlines)
+
+        self.assertIn("🏛 España:", result)
+        self.assertNotIn("🤖 Tech:", result)
+        self.assertNotIn("Gemma 4 12B", result)
+
+    def test_generate_news_briefing_keeps_grounded_tech_block(self):
+        class FakeResponse:
+            def raise_for_status(self):
+                return None
+
+            def json(self):
+                return {
+                    "candidates": [
+                        {
+                            "content": {
+                                "parts": [
+                                    {
+                                        "text": (
+                                            "🤖 Tech: OpenAI presenta mejoras para ChatGPT.\n"
+                                            "   Por qué importa: Cambia flujos de trabajo con IA."
+                                        )
+                                    }
+                                ]
+                            }
+                        }
+                    ]
+                }
+
+        headlines = [
+            {
+                "source": "OpenAI Blog",
+                "title": "OpenAI presenta mejoras para ChatGPT",
+                "description": "",
+                "profile": bot._source_profile("OpenAI Blog"),
+            }
+        ]
+
+        with patch.object(bot, "GEMINI_API_KEY", "key"), \
+             patch.object(bot.requests, "post", return_value=FakeResponse()):
+            result = bot.generate_news_briefing(headlines)
+
+        self.assertIn("🤖 Tech: OpenAI presenta mejoras para ChatGPT.", result)
 
     def test_news_briefing_html_highlights_why_it_matters(self):
         html = bot._format_news_briefing_html(

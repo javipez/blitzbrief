@@ -2,6 +2,7 @@ __pycache__/
 *.pyc
 .env
 .DS_Store
+.blitzbrief_seen_articles.json
 .elpais_seen_articles.json
 .blitzbrief_sent_runs.json
 .claude/

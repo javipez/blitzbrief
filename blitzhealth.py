@@ -6,7 +6,7 @@ Scrapea fuentes RSS de salud/fitness, autores y lecturas largas cada
 domingo, filtra contenido de los últimos 7 días, genera un resumen con
 Gemini y lo envía por Telegram.
 
-Mismo patrón que elpais_telegram_bot.py: requests + ElementTree + Gemini REST.
+Mismo patrón que blitzbrief_bot.py: requests + ElementTree + Gemini REST.
 
 Uso:
   pip install -r requirements.txt
@@ -266,7 +266,7 @@ def _load_weekend_authors() -> dict[str, dict[str, str]]:
 
 def fetch_weekend_author_articles(errors: Optional[list] = None) -> list[dict]:
     """Recopila artículos semanales de autores del digest diario."""
-    import elpais_telegram_bot as press_bot
+    import blitzbrief_bot as press_bot
 
     cutoff = datetime.now(timezone.utc) - timedelta(days=LOOKBACK_DAYS)
     config = _load_weekend_authors()

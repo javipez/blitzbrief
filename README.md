@@ -83,16 +83,16 @@ export TELEGRAM_CHAT_ID="tu_chat_id"
 export GEMINI_API_KEY="tu_api_key"
 
 # Digest una vez (briefing + columnas)
-python elpais_telegram_bot.py
+python blitzbrief_bot.py
 
 # Modo bot interactivo (escucha comandos)
-python elpais_telegram_bot.py --serve
+python blitzbrief_bot.py --serve
 ```
 
 ## Arquitectura
 
 ```
-elpais_telegram_bot.py   # Script principal (briefing IA + scraping + bot)
+blitzbrief_bot.py        # Script principal (briefing IA + scraping + bot)
 blitzhealth.py           # Digest dominical Blitz Weekend
 authors.json             # Autores configurados (editable desde Telegram)
 .github/workflows/       # GitHub Actions para ejecución automática
@@ -102,6 +102,6 @@ authors.json             # Autores configurados (editable desde Telegram)
 
 - El briefing usa **Gemini 2.5 Flash** (tier gratuito de Google AI Studio)
 - El digest dominical se ejecuta con `blitzhealth.py` y se envía como **Blitz Weekend** por Telegram
-- `.elpais_seen_articles.json` evita enviar duplicados
+- `.blitzbrief_seen_articles.json` evita enviar duplicados
 - Si algún medio cambia su web, el parser puede necesitar ajustes (scraping HTML, no API oficial)
 - El script es respetuoso con los servidores: una petición por autor, sin concurrencia agresiva
