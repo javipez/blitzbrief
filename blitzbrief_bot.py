@@ -390,6 +390,17 @@ ESPN_FOOTBALL_LEAGUES: list[str] = [
     "esp.copa_del_rey", # Copa del Rey
 ]
 
+# Nombre de competición legible por código de liga ESPN. Las claves deben
+# coincidir con COMPETITION_TV_SPAIN; el nombre libre que devuelve ESPN
+# (data.leagues[0].name, ej. "Spanish LaLiga") no encaja con esas claves.
+ESPN_LEAGUE_DISPLAY_NAMES: dict[str, str] = {
+    "esp.1": "La Liga",
+    "esp.2": "Segunda División",
+    "uefa.champions": "UEFA Champions League",
+    "uefa.europa": "UEFA Europa League",
+    "esp.copa_del_rey": "Copa del Rey",
+}
+
 # Canal de TV típico por competición en España (derechos 2025-26)
 COMPETITION_TV_SPAIN: dict[str, str] = {
     "La Liga": "DAZN / Movistar+ LaLiga",
@@ -1922,13 +1933,7 @@ def fetch_upcoming_fixtures() -> list[str]:
                 match_local = match_utc.astimezone(tz_madrid)
                 time_str = match_local.strftime("%H:%M")
 
-                league_name = event["competitions"][0]["type"].get(
-                    "abbreviation", data.get("leagues", [{}])[0].get("name", league)
-                )
-                # Intentar usar el nombre de la liga del evento
-                if "season" in event and "type" in event["season"]:
-                    league_name = event.get("name", league_name).split(" - ")[0]
-                league_name = data.get("leagues", [{}])[0].get("name", league)
+                league_name = ESPN_LEAGUE_DISPLAY_NAMES.get(league, league)
 
                 channel = COMPETITION_TV_SPAIN.get(league_name, "")
                 channel_str = f" — {channel}" if channel else ""
@@ -2851,7 +2856,7 @@ def _handle_command(text: str, chat_id: int) -> None:
 
     if cmd == "/update":
         send_telegram_message("🔄 _Consultando fuentes\\.\\.\\._")
-        run_digest(notify_empty=True)
+        run_digest(notify_empty=True, mode="full")
 
     elif cmd == "/add":
         # /add <fuente> <nombre> <slug_o_url>
