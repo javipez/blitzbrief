@@ -9,6 +9,7 @@ Bot de Telegram que cada mañana te envía un **briefing de noticias generado co
 - **Digest de columnistas** — Consulta las páginas de autor de El País, El Plural y feeds RSS para detectar artículos nuevos
 - **Blitz Weekend** — Cada domingo prepara un resumen semanal con salud/longevidad, columnas, lecturas largas y contexto
 - **Podcasts** — Detecta segmentos de podcast por título y te envía el audio directamente en Telegram
+- **Entrenos del box** — Avisa (con enlace) cuando el box de CrossFit publica los entrenos de la próxima semana
 - **Alertas de errores** — Te avisa si alguna fuente falla
 
 ## Fuentes del briefing
@@ -102,6 +103,7 @@ authors.json             # Autores configurados (editable desde Telegram)
 
 - El briefing usa **Gemini 2.5 Flash** (tier gratuito de Google AI Studio)
 - El digest dominical se ejecuta con `blitzhealth.py` y se envía como **Blitz Weekend** por Telegram
-- `.blitzbrief_seen_articles.json` evita enviar duplicados
+- `.blitzbrief_seen_articles.json` evita enviar duplicados (también el aviso de entrenos, que llega una sola vez por semana)
+- El aviso de entrenos construye la URL de la próxima semana (`entrenamientos-DD-MM-YYYY-al-DD-MM-YYYY`) y comprueba si ya existe; se configura en `BOX_WORKOUTS_URL_TEMPLATE` (déjalo vacío para desactivarlo)
 - Si algún medio cambia su web, el parser puede necesitar ajustes (scraping HTML, no API oficial)
 - El script es respetuoso con los servidores: una petición por autor, sin concurrencia agresiva

@@ -415,6 +415,18 @@ COMPETITION_TV_SPAIN: dict[str, str] = {
     "EuroCup": "DAZN",
 }
 
+# ── Entrenos del box de CrossFit (Box Olimpo) ─────────────────────
+# El blog publica los entrenos de la SIGUIENTE semana (normalmente
+# viernes o domingo) en una URL con el rango de fechas lunes-domingo,
+# p. ej. /entrenamientos-06-07-2026-al-12-07-2026. Como la URL es
+# predecible, construimos la de la próxima semana y comprobamos si ya
+# existe (200 = publicados, 404 = aún no). Deja la plantilla vacía para
+# desactivar el aviso.
+BOX_WORKOUTS_URL_TEMPLATE = (
+    "https://boxolimpo.com/entrenamientos-{start}-al-{end}"
+)
+BOX_WORKOUTS_LABEL = "Box Olimpo"
+
 # Logging
 logging.basicConfig(
     level=logging.INFO,
@@ -2130,6 +2142,78 @@ def fetch_bitcoin_block() -> str:
     return line
 
 
+# ── Entrenos del box (aviso + enlace cuando se publican) ──────────
+
+
+def _upcoming_box_week(
+    now: Optional[datetime] = None,
+) -> tuple[str, object, object]:
+    """Devuelve (url, lunes, domingo) de la SIGUIENTE semana de entrenos.
+
+    Los entrenos se publican para la semana que empieza el próximo lunes,
+    así que apuntamos siempre a ese rango. Al pasar a esa semana, la
+    función avanza sola al siguiente bloque.
+    """
+    tz = ZoneInfo("Europe/Madrid")
+    reference = now or datetime.now(tz)
+    today = reference.astimezone(tz).date()
+    this_monday = today - timedelta(days=today.weekday())
+    next_monday = this_monday + timedelta(days=7)
+    next_sunday = next_monday + timedelta(days=6)
+    url = BOX_WORKOUTS_URL_TEMPLATE.format(
+        start=next_monday.strftime("%d-%m-%Y"),
+        end=next_sunday.strftime("%d-%m-%Y"),
+    )
+    return url, next_monday, next_sunday
+
+
+def fetch_box_workouts_notice(
+    now: Optional[datetime] = None,
+) -> Optional[dict]:
+    """Comprueba si ya están los entrenos de la próxima semana.
+
+    Devuelve un dict {url, start, end} si la página existe (200), o None
+    si aún no se han publicado (404) o si la plantilla está desactivada.
+    Un 404 es el estado normal la mayor parte de la semana, así que no se
+    trata como error.
+    """
+    if not BOX_WORKOUTS_URL_TEMPLATE:
+        return None
+
+    url, start, end = _upcoming_box_week(now)
+    try:
+        resp = requests.get(url, headers={"User-Agent": USER_AGENT}, timeout=15)
+    except requests.RequestException as e:
+        log.warning(f"[{BOX_WORKOUTS_LABEL}] Error al comprobar entrenos: {e}")
+        return None
+
+    if resp.status_code == 404:
+        log.info(
+            f"[{BOX_WORKOUTS_LABEL}] Entrenos "
+            f"{start.strftime('%d/%m')}–{end.strftime('%d/%m')} aún no publicados."
+        )
+        return None
+    if not resp.ok:
+        log.warning(
+            f"[{BOX_WORKOUTS_LABEL}] Respuesta inesperada "
+            f"({resp.status_code}) al comprobar entrenos."
+        )
+        return None
+
+    return {"url": url, "start": start, "end": end}
+
+
+def send_box_workouts_notice(notice: dict) -> bool:
+    """Envía un aviso corto con el enlace a los entrenos de la semana."""
+    start = notice["start"].strftime("%d/%m")
+    end = notice["end"].strftime("%d/%m")
+    message = (
+        f"🏋️ Entrenos {BOX_WORKOUTS_LABEL} — semana {start} al {end} ya publicados\n"
+        f"{notice['url']}"
+    )
+    return _send_plain_message(message)
+
+
 def generate_news_briefing(headlines: list[dict]) -> Optional[str]:
     """Envía los titulares a Gemini 2.5 Flash para generar un briefing categorizado."""
     if not GEMINI_API_KEY:
@@ -2696,6 +2780,8 @@ def run_digest(notify_empty: bool = False, mode: str = "morning") -> None:
     sent_runs: dict[str, bool] = {}
     run_key = ""
     delivery_success = False
+    briefing_sent = False
+    articles_delivered = False
 
     if scheduled_mode:
         sent_runs = load_sent_runs()
@@ -2707,7 +2793,8 @@ def run_digest(notify_empty: bool = False, mode: str = "morning") -> None:
     # ── Mañana: mensaje 1 — Titulares ────────────────────────────────
     if mode in ("morning", "full"):
         if GEMINI_API_KEY:
-            delivery_success = send_news_briefing() or delivery_success
+            briefing_sent = send_news_briefing()
+            delivery_success = briefing_sent or delivery_success
         else:
             log.info("Sin GEMINI_API_KEY — briefing omitido.")
 
@@ -2787,6 +2874,7 @@ def run_digest(notify_empty: bool = False, mode: str = "morning") -> None:
             f"Encontrados {len(all_new_articles)} artículo(s) nuevo(s). Enviando..."
         )
         success = send_articles_digest(all_new_articles)
+        articles_delivered = success
         if success:
             delivery_success = True
             for art in all_new_articles:
@@ -2808,6 +2896,18 @@ def run_digest(notify_empty: bool = False, mode: str = "morning") -> None:
             if audio_sent:
                 delivery_success = True
                 h = article_hash(seg["audio_url"])
+                seen.append(h)
+                seen_set.add(h)
+                save_seen_articles(seen)
+
+    # ── Entrenos del box: aviso cuando se publican (una vez por semana) ─
+    box_notice = fetch_box_workouts_notice()
+    if box_notice:
+        h = article_hash(box_notice["url"])
+        if h not in pending_hashes:
+            if send_box_workouts_notice(box_notice):
+                delivery_success = True
+                pending_hashes.add(h)
                 seen.append(h)
                 seen_set.add(h)
                 save_seen_articles(seen)
@@ -2840,10 +2940,21 @@ def run_digest(notify_empty: bool = False, mode: str = "morning") -> None:
         if bitcoin:
             delivery_success = _send_plain_message(bitcoin) or delivery_success
 
-    if scheduled_mode and delivery_success:
-        sent_runs[run_key] = True
-        save_sent_runs(sent_runs)
-        log.info(f"Bloque {run_key} marcado como enviado.")
+    if scheduled_mode:
+        if mode == "morning":
+            primary_delivered = briefing_sent if GEMINI_API_KEY else True
+        else:  # "evening"
+            primary_delivered = articles_delivered if all_new_articles else True
+
+        if primary_delivered:
+            sent_runs[run_key] = True
+            save_sent_runs(sent_runs)
+            log.info(f"Bloque {run_key} marcado como enviado.")
+        else:
+            log.warning(
+                f"Bloque {run_key} NO marcado como enviado "
+                "(falló el contenido principal); se reintentará en el próximo cron."
+            )
 
     log.info("Hecho.")
 

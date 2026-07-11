@@ -1,6 +1,7 @@
 import unittest
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from unittest.mock import patch
+from zoneinfo import ZoneInfo
 
 import blitzbrief_bot as bot
 
@@ -290,6 +291,7 @@ class BlitzBriefTests(unittest.TestCase):
              patch.object(bot, "send_articles_digest", return_value=False), \
              patch.object(bot, "fetch_tomorrow_weather_block", return_value=""), \
              patch.object(bot, "fetch_bitcoin_block", return_value=""), \
+             patch.object(bot, "fetch_box_workouts_notice", return_value=None), \
              patch.object(bot, "save_seen_articles", side_effect=lambda seen: saved_states.append(set(seen))):
             bot.run_digest(mode="evening")
 
@@ -320,6 +322,7 @@ class BlitzBriefTests(unittest.TestCase):
              patch.object(bot, "send_articles_digest", side_effect=lambda articles: sent_digests.append(articles) or True), \
              patch.object(bot, "fetch_tomorrow_weather_block", return_value=""), \
              patch.object(bot, "fetch_bitcoin_block", return_value=""), \
+             patch.object(bot, "fetch_box_workouts_notice", return_value=None), \
              patch.object(bot, "save_seen_articles", side_effect=lambda seen: saved_states.append(list(seen))):
             bot.run_digest(mode="evening")
 
@@ -384,6 +387,7 @@ class BlitzBriefTests(unittest.TestCase):
              patch.object(bot, "fetch_podcast_segments", return_value=segments), \
              patch.object(bot, "fetch_weather_block", return_value=""), \
              patch.object(bot, "send_telegram_audio", side_effect=[True, False]), \
+             patch.object(bot, "fetch_box_workouts_notice", return_value=None), \
              patch.object(bot, "save_seen_articles", side_effect=lambda seen: saved_states.append(set(seen))):
             bot.run_digest(mode="morning")
 
@@ -408,10 +412,43 @@ class BlitzBriefTests(unittest.TestCase):
              patch.object(bot, "send_news_briefing", return_value=True), \
              patch.object(bot, "fetch_weather_block", return_value=""), \
              patch.object(bot, "load_seen_articles", return_value=[]), \
-             patch.object(bot, "fetch_podcast_segments", return_value=[]):
+             patch.object(bot, "fetch_podcast_segments", return_value=[]), \
+             patch.object(bot, "fetch_box_workouts_notice", return_value=None):
             bot.run_digest(mode="morning")
 
         self.assertEqual(saved_runs, [{bot.digest_run_key("morning"): True}])
+
+    def test_scheduled_digest_not_marked_when_morning_briefing_fails_but_weather_succeeds(self):
+        save_calls = []
+
+        with patch.dict(bot.PODCAST_SOURCES, {}, clear=True), \
+             patch.object(bot, "GEMINI_API_KEY", "key"), \
+             patch.object(bot, "load_sent_runs", return_value={}), \
+             patch.object(bot, "save_sent_runs", side_effect=lambda runs: save_calls.append(dict(runs))), \
+             patch.object(bot, "send_news_briefing", return_value=False), \
+             patch.object(bot, "fetch_weather_block", return_value="☀️ Málaga: 20°C"), \
+             patch.object(bot, "_send_plain_message", return_value=True), \
+             patch.object(bot, "load_seen_articles", return_value=[]), \
+             patch.object(bot, "fetch_box_workouts_notice", return_value=None):
+            bot.run_digest(mode="morning")
+
+        self.assertEqual(save_calls, [])
+
+    def test_scheduled_digest_marked_when_evening_inbox_empty(self):
+        save_calls = []
+
+        with patch.dict(bot.ELPAIS_AUTHORS, {}, clear=True), \
+             patch.dict(bot.ELPLURAL_AUTHORS, {}, clear=True), \
+             patch.dict(bot.RSS_AUTHORS, {}, clear=True), \
+             patch.object(bot, "load_sent_runs", return_value={}), \
+             patch.object(bot, "save_sent_runs", side_effect=lambda runs: save_calls.append(dict(runs))), \
+             patch.object(bot, "load_seen_articles", return_value=[]), \
+             patch.object(bot, "fetch_tomorrow_weather_block", return_value=""), \
+             patch.object(bot, "fetch_bitcoin_block", return_value=""), \
+             patch.object(bot, "fetch_box_workouts_notice", return_value=None):
+            bot.run_digest(mode="evening")
+
+        self.assertEqual(save_calls, [{bot.digest_run_key("evening"): True}])
 
     def test_empty_digest_header_uses_madrid_timezone(self):
         with patch.object(bot, "datetime", FakeDateTime):
@@ -914,6 +951,114 @@ class BlitzBriefTests(unittest.TestCase):
 
         self.assertTrue(sent)
         self.assertEqual(plain_calls, ["FALLBACK TEXT"])
+
+    def test_upcoming_box_week_targets_next_monday_to_sunday(self):
+        madrid = ZoneInfo("Europe/Madrid")
+
+        # Miércoles: apunta a la semana que empieza el próximo lunes.
+        url, start, end = bot._upcoming_box_week(
+            datetime(2026, 7, 8, 9, 0, tzinfo=madrid)
+        )
+        self.assertEqual(start, date(2026, 7, 13))
+        self.assertEqual(end, date(2026, 7, 19))
+        self.assertEqual(
+            url, "https://boxolimpo.com/entrenamientos-13-07-2026-al-19-07-2026"
+        )
+
+        # Domingo de esa misma semana: sigue apuntando a la siguiente.
+        url_sun, start_sun, _ = bot._upcoming_box_week(
+            datetime(2026, 7, 12, 20, 0, tzinfo=madrid)
+        )
+        self.assertEqual(start_sun, date(2026, 7, 13))
+        self.assertEqual(
+            url_sun, "https://boxolimpo.com/entrenamientos-13-07-2026-al-19-07-2026"
+        )
+
+        # Al pasar al lunes, avanza al siguiente bloque semanal.
+        _, start_mon, end_mon = bot._upcoming_box_week(
+            datetime(2026, 7, 13, 9, 0, tzinfo=madrid)
+        )
+        self.assertEqual(start_mon, date(2026, 7, 20))
+        self.assertEqual(end_mon, date(2026, 7, 26))
+
+    def test_fetch_box_workouts_notice_none_when_not_published(self):
+        class FakeResp:
+            status_code = 404
+            ok = False
+
+        with patch.object(bot.requests, "get", return_value=FakeResp()):
+            notice = bot.fetch_box_workouts_notice(
+                datetime(2026, 7, 8, 9, 0, tzinfo=ZoneInfo("Europe/Madrid"))
+            )
+
+        self.assertIsNone(notice)
+
+    def test_fetch_box_workouts_notice_returns_dict_when_published(self):
+        class FakeResp:
+            status_code = 200
+            ok = True
+
+        with patch.object(bot.requests, "get", return_value=FakeResp()):
+            notice = bot.fetch_box_workouts_notice(
+                datetime(2026, 7, 8, 9, 0, tzinfo=ZoneInfo("Europe/Madrid"))
+            )
+
+        self.assertIsNotNone(notice)
+        self.assertEqual(
+            notice["url"],
+            "https://boxolimpo.com/entrenamientos-13-07-2026-al-19-07-2026",
+        )
+        self.assertEqual(notice["start"], date(2026, 7, 13))
+
+    def test_box_workouts_notice_sent_once_and_marked_seen(self):
+        notice = {
+            "url": "https://boxolimpo.com/entrenamientos-13-07-2026-al-19-07-2026",
+            "start": date(2026, 7, 13),
+            "end": date(2026, 7, 19),
+        }
+        notice_hash = bot.article_hash(notice["url"])
+        saved_states = []
+
+        with patch.dict(bot.ELPAIS_AUTHORS, {}, clear=True), \
+             patch.dict(bot.ELPLURAL_AUTHORS, {}, clear=True), \
+             patch.dict(bot.RSS_AUTHORS, {}, clear=True), \
+             patch.dict(bot.PODCAST_SOURCES, {}, clear=True), \
+             patch.object(bot, "GEMINI_API_KEY", ""), \
+             patch.object(bot, "load_sent_runs", return_value={}), \
+             patch.object(bot, "save_sent_runs"), \
+             patch.object(bot, "load_seen_articles", return_value=[]), \
+             patch.object(bot, "fetch_weather_block", return_value=""), \
+             patch.object(bot, "fetch_box_workouts_notice", return_value=notice), \
+             patch.object(bot, "send_box_workouts_notice", return_value=True) as send_box, \
+             patch.object(bot, "save_seen_articles", side_effect=lambda seen: saved_states.append(list(seen))):
+            bot.run_digest(mode="morning")
+
+        send_box.assert_called_once_with(notice)
+        self.assertEqual(saved_states, [[notice_hash]])
+
+    def test_box_workouts_notice_not_resent_when_already_seen(self):
+        notice = {
+            "url": "https://boxolimpo.com/entrenamientos-13-07-2026-al-19-07-2026",
+            "start": date(2026, 7, 13),
+            "end": date(2026, 7, 19),
+        }
+        notice_hash = bot.article_hash(notice["url"])
+
+        with patch.dict(bot.ELPAIS_AUTHORS, {}, clear=True), \
+             patch.dict(bot.ELPLURAL_AUTHORS, {}, clear=True), \
+             patch.dict(bot.RSS_AUTHORS, {}, clear=True), \
+             patch.dict(bot.PODCAST_SOURCES, {}, clear=True), \
+             patch.object(bot, "GEMINI_API_KEY", ""), \
+             patch.object(bot, "load_sent_runs", return_value={}), \
+             patch.object(bot, "save_sent_runs"), \
+             patch.object(bot, "load_seen_articles", return_value=[notice_hash]), \
+             patch.object(bot, "fetch_weather_block", return_value=""), \
+             patch.object(bot, "fetch_box_workouts_notice", return_value=notice), \
+             patch.object(bot, "send_box_workouts_notice", return_value=True) as send_box, \
+             patch.object(bot, "save_seen_articles"):
+            bot.run_digest(mode="morning")
+
+        send_box.assert_not_called()
 
 
 if __name__ == "__main__":
