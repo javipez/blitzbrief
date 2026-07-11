@@ -2402,12 +2402,18 @@ def _send_rich_html_message(
 
 
 def _send_html_message(text: str, fallback_text: str = "") -> bool:
-    """Envía un mensaje HTML por Telegram y cae a texto plano si falla."""
+    """Envía un mensaje HTML por Telegram y cae a texto plano si falla.
+
+    Si falla un chunk que no es el primero, los chunks anteriores ya se
+    entregaron con éxito: el fallback solo reenvía el chunk fallido (sin
+    tags HTML), nunca el mensaje completo, para no duplicar contenido.
+    """
     if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
         log.error("Falta TELEGRAM_BOT_TOKEN o TELEGRAM_CHAT_ID.")
         return False
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
-    for chunk in _split_message(text, max_len=3000):
+    chunks = _split_message(text, max_len=3000)
+    for index, chunk in enumerate(chunks):
         try:
             resp = requests.post(
                 url,
@@ -2423,10 +2429,18 @@ def _send_html_message(text: str, fallback_text: str = "") -> bool:
             data = resp.json()
             if not data.get("ok"):
                 log.error(f"[Telegram] Error HTML: {data}")
-                return _send_plain_message(fallback_text or text)
+                if index == 0:
+                    return _send_plain_message(fallback_text or text)
+                return _send_plain_message(
+                    BeautifulSoup(chunk, "html.parser").get_text()
+                )
         except requests.RequestException as e:
             log.error(f"[Telegram] Error al enviar HTML: {e}")
-            return _send_plain_message(fallback_text or text)
+            if index == 0:
+                return _send_plain_message(fallback_text or text)
+            return _send_plain_message(
+                BeautifulSoup(chunk, "html.parser").get_text()
+            )
     return True
 
 

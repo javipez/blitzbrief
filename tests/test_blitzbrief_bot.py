@@ -859,6 +859,62 @@ class BlitzBriefTests(unittest.TestCase):
 
         self.assertEqual(result, [{"update_id": 5}])
 
+    def test_send_html_message_second_chunk_failure_only_resends_failed_chunk(self):
+        text = ("A" * 2000) + "\n\n" + ("B" * 2000)
+        plain_calls = []
+        responses = iter([{"ok": True}, {"ok": False}])
+
+        class FakeResponse:
+            def __init__(self, data):
+                self._data = data
+
+            def raise_for_status(self):
+                return None
+
+            def json(self):
+                return self._data
+
+        with patch.object(bot, "TELEGRAM_BOT_TOKEN", "token"), \
+             patch.object(bot, "TELEGRAM_CHAT_ID", "123"), \
+             patch.object(
+                 bot.requests, "post",
+                 side_effect=lambda *a, **k: FakeResponse(next(responses)),
+             ), \
+             patch.object(
+                 bot, "_send_plain_message",
+                 side_effect=lambda t: plain_calls.append(t) or True,
+             ):
+            sent = bot._send_html_message(text, fallback_text="FALLBACK TEXT")
+
+        self.assertTrue(sent)
+        self.assertEqual(len(plain_calls), 1)
+        self.assertIn("B" * 2000, plain_calls[0])
+        self.assertNotIn("A" * 2000, plain_calls[0])
+        self.assertNotIn("FALLBACK TEXT", plain_calls[0])
+
+    def test_send_html_message_first_chunk_failure_resends_whole_fallback(self):
+        text = ("A" * 2000) + "\n\n" + ("B" * 2000)
+        plain_calls = []
+
+        class FakeResponse:
+            def raise_for_status(self):
+                return None
+
+            def json(self):
+                return {"ok": False}
+
+        with patch.object(bot, "TELEGRAM_BOT_TOKEN", "token"), \
+             patch.object(bot, "TELEGRAM_CHAT_ID", "123"), \
+             patch.object(bot.requests, "post", return_value=FakeResponse()), \
+             patch.object(
+                 bot, "_send_plain_message",
+                 side_effect=lambda t: plain_calls.append(t) or True,
+             ):
+            sent = bot._send_html_message(text, fallback_text="FALLBACK TEXT")
+
+        self.assertTrue(sent)
+        self.assertEqual(plain_calls, ["FALLBACK TEXT"])
+
 
 if __name__ == "__main__":
     unittest.main()
