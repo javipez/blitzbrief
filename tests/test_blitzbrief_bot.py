@@ -786,6 +786,47 @@ class BlitzBriefTests(unittest.TestCase):
         self.assertEqual(len(calls), 1)
         send_html.assert_called_once_with("<b>HTML</b>", fallback_text="plain")
 
+    def test_get_updates_sends_allowed_updates_as_json(self):
+        captured = {}
+
+        class FakeResponse:
+            def json(self):
+                return {"ok": True, "result": []}
+
+        def fake_get(url, params, timeout):
+            captured["params"] = params
+            return FakeResponse()
+
+        with patch.object(bot.requests, "get", side_effect=fake_get):
+            bot._get_updates(offset=5)
+
+        self.assertEqual(captured["params"]["allowed_updates"], '["message"]')
+        self.assertEqual(captured["params"]["offset"], 5)
+
+    def test_get_updates_logs_warning_when_not_ok(self):
+        class FakeResponse:
+            def json(self):
+                return {"ok": False, "error_code": 400, "description": "Bad Request"}
+
+        with patch.object(bot.requests, "get", return_value=FakeResponse()):
+            with self.assertLogs(bot.log, level="WARNING") as logs:
+                result = bot._get_updates()
+
+        self.assertEqual(result, [])
+        self.assertTrue(
+            any("getUpdates devolvió error" in message for message in logs.output)
+        )
+
+    def test_get_updates_returns_result_when_ok(self):
+        class FakeResponse:
+            def json(self):
+                return {"ok": True, "result": [{"update_id": 5}]}
+
+        with patch.object(bot.requests, "get", return_value=FakeResponse()):
+            result = bot._get_updates()
+
+        self.assertEqual(result, [{"update_id": 5}])
+
 
 if __name__ == "__main__":
     unittest.main()

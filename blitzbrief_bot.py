@@ -2840,10 +2840,16 @@ def run_digest(notify_empty: bool = False, mode: str = "morning") -> None:
 def _get_updates(offset: int = 0) -> list[dict]:
     """Obtiene mensajes nuevos de Telegram con long polling."""
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/getUpdates"
-    params = {"offset": offset, "timeout": 30, "allowed_updates": ["message"]}
+    params = {
+        "offset": offset,
+        "timeout": 30,
+        "allowed_updates": json.dumps(["message"]),
+    }
     try:
         resp = requests.get(url, params=params, timeout=35)
         data = resp.json()
+        if not data.get("ok"):
+            log.warning(f"getUpdates devolvió error: {data}")
         return data.get("result", [])
     except requests.RequestException as e:
         log.warning(f"Error en getUpdates: {e}")
