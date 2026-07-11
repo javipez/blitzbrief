@@ -6,6 +6,58 @@ import blitzhealth as health
 
 
 class BlitzHealthWeekendTests(unittest.TestCase):
+    def test_fetch_rss_articles_uses_published_when_no_pubdate(self):
+        # Sin <pubDate> mezclado con etiquetas al estilo Atom sueltas
+        # (<published>/<updated>) sin espacio de nombres: reproduce el
+        # bug de truthiness de ElementTree sin depender de la resolución
+        # de namespace de <entry>/<title> en feeds Atom reales, que es un
+        # problema aparte y no forma parte de este fix.
+        xml = """<?xml version="1.0"?>
+        <rss><channel>
+          <title>Blog</title>
+          <item>
+            <title>Entrada</title>
+            <link>https://example.com/entrada</link>
+            <published>2026-06-10T09:00:00Z</published>
+          </item>
+        </channel></rss>
+        """
+
+        with patch.object(health, "_fetch_page", return_value=(xml, None)):
+            articles = health.fetch_rss_articles(
+                "Autor", "https://example.com/feed",
+                datetime(2026, 6, 9, tzinfo=timezone.utc),
+            )
+
+        self.assertEqual(len(articles), 1)
+        self.assertEqual(
+            articles[0]["date"], datetime(2026, 6, 10, 9, 0, tzinfo=timezone.utc)
+        )
+
+    def test_fetch_rss_articles_prefers_published_over_updated(self):
+        xml = """<?xml version="1.0"?>
+        <rss><channel>
+          <title>Blog</title>
+          <item>
+            <title>Entrada</title>
+            <link>https://example.com/entrada</link>
+            <published>2026-06-10T09:00:00Z</published>
+            <updated>2026-06-12T09:00:00Z</updated>
+          </item>
+        </channel></rss>
+        """
+
+        with patch.object(health, "_fetch_page", return_value=(xml, None)):
+            articles = health.fetch_rss_articles(
+                "Autor", "https://example.com/feed",
+                datetime(2026, 6, 9, tzinfo=timezone.utc),
+            )
+
+        self.assertEqual(len(articles), 1)
+        self.assertEqual(
+            articles[0]["date"], datetime(2026, 6, 10, 9, 0, tzinfo=timezone.utc)
+        )
+
     def test_generate_weekend_digest_prompt_includes_all_sections(self):
         captured = {}
 

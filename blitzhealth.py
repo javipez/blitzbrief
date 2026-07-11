@@ -156,11 +156,20 @@ def fetch_rss_articles(
             ns = {"atom": "http://www.w3.org/2005/Atom"}
             link_el = item.find("atom:link", ns)
         if pub_el is None:
-            pub_el = item.find("published") or item.find(
-                "{http://www.w3.org/2005/Atom}published"
-            ) or item.find("updated") or item.find(
-                "{http://www.w3.org/2005/Atom}updated"
-            )
+            # Element sin hijos es falsy aunque tenga .text, así que un
+            # `or` encadenado de .find() saltaría siempre al último
+            # candidato ("updated"). Hace falta un bucle explícito con
+            # `is not None`.
+            for tag in (
+                "published",
+                "{http://www.w3.org/2005/Atom}published",
+                "updated",
+                "{http://www.w3.org/2005/Atom}updated",
+            ):
+                candidate = item.find(tag)
+                if candidate is not None:
+                    pub_el = candidate
+                    break
 
         if title_el is None:
             continue
