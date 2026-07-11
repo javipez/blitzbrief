@@ -2215,7 +2215,7 @@ def send_box_workouts_notice(notice: dict) -> bool:
 
 
 def generate_news_briefing(headlines: list[dict]) -> Optional[str]:
-    """Envía los titulares a Gemini 2.5 Flash para generar un briefing categorizado."""
+    """Envía los titulares a Gemini 3 Flash para generar un briefing categorizado."""
     if not GEMINI_API_KEY:
         log.error("Falta GEMINI_API_KEY para generar el briefing.")
         return None
@@ -2293,7 +2293,7 @@ TITULARES (única fuente válida):
 
     url = (
         "https://generativelanguage.googleapis.com/v1beta/models/"
-        "gemini-2.5-flash:generateContent"
+        "gemini-3-flash:generateContent"
     )
     payload = {
         "contents": [{"parts": [{"text": prompt}]}],

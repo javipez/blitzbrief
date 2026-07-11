@@ -4,7 +4,7 @@ Bot de Telegram que cada mañana te envía un **briefing de noticias generado co
 
 ## Qué hace
 
-- **Briefing de noticias con IA** — Recoge titulares de 14 fuentes (nacionales, internacionales, locales y deportivas), los procesa con Gemini 2.5 Flash y te envía un resumen categorizado
+- **Briefing de noticias con IA** — Recoge titulares de 14 fuentes (nacionales, internacionales, locales y deportivas), los procesa con Gemini 3 Flash y te envía un resumen categorizado
 - **Formato enriquecido de Telegram** — El briefing y el digest de columnistas usan Rich Messages cuando están disponibles, con fallback automático al formato HTML anterior
 - **Digest de columnistas** — Consulta las páginas de autor de El País, El Plural y feeds RSS para detectar artículos nuevos
 - **Blitz Weekend** — Cada domingo prepara un resumen semanal con salud/longevidad, columnas, lecturas largas y contexto
@@ -101,7 +101,7 @@ authors.json             # Autores configurados (editable desde Telegram)
 
 ## Notas
 
-- El briefing usa **Gemini 2.5 Flash** (tier gratuito de Google AI Studio)
+- El briefing usa **Gemini 3 Flash** (tier gratuito de Google AI Studio)
 - El digest dominical se ejecuta con `blitzhealth.py` y se envía como **Blitz Weekend** por Telegram
 - `.blitzbrief_seen_articles.json` evita enviar duplicados (también el aviso de entrenos, que llega una sola vez por semana)
 - El aviso de entrenos construye la URL de la próxima semana (`entrenamientos-DD-MM-YYYY-al-DD-MM-YYYY`) y comprueba si ya existe; se configura en `BOX_WORKOUTS_URL_TEMPLATE` (déjalo vacío para desactivarlo)

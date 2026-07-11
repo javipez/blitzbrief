@@ -411,14 +411,14 @@ LECTURAS LARGAS / CONTEXTO:
 
     url = (
         "https://generativelanguage.googleapis.com/v1beta/models/"
-        "gemini-2.5-flash:generateContent"
+        "gemini-3-flash:generateContent"
     )
     payload = {
         "contents": [{"parts": [{"text": prompt}]}],
         "generationConfig": {"maxOutputTokens": 8192},
     }
 
-    # Hasta 3 intentos con espera entre ellos: Gemini 2.5 Flash devuelve
+    # Hasta 3 intentos con espera entre ellos: Gemini 3 Flash devuelve
     # 503/overload con frecuencia y un solo fallo no debe tirar el digest.
     for attempt in range(3):
         try:
