@@ -63,18 +63,7 @@ Los autores se gestionan en `authors.json` o directamente desde Telegram con `/a
 }
 ```
 
-### 4. Opción A: GitHub Actions (recomendado, gratis)
-
-1. Haz fork de este repo
-2. Ve a **Settings > Secrets and variables > Actions** y añade:
-   - `TELEGRAM_BOT_TOKEN`
-   - `TELEGRAM_CHAT_ID`
-   - `GEMINI_API_KEY` (obtén una gratis en [aistudio.google.com](https://aistudio.google.com))
-3. Listo. Se ejecutará cada mañana a las 9:00 hora de España
-
-Para probarlo manualmente: **Actions > BlitzBrief Daily Digest > Run workflow**.
-
-### 4. Opción B: Ejecución local
+### 4. Ejecución
 
 ```bash
 pip install -r requirements.txt
@@ -90,13 +79,16 @@ python blitzbrief_bot.py
 python blitzbrief_bot.py --serve
 ```
 
+En producción se ejecuta en un VPS con systemd: un servicio para `--serve`
+(escucha comandos de Telegram) y timers para los digests programados.
+
 ## Arquitectura
 
 ```
 blitzbrief_bot.py        # Script principal (briefing IA + scraping + bot)
 blitzhealth.py           # Digest dominical Blitz Weekend
 authors.json             # Autores configurados (editable desde Telegram)
-.github/workflows/       # GitHub Actions para ejecución automática
+.github/workflows/       # CI (tests en cada push/PR)
 ```
 
 ## Notas
