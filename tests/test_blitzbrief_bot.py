@@ -705,6 +705,38 @@ class BlitzBriefTests(unittest.TestCase):
 
         self.assertIn("🤖 Tech: OpenAI presenta mejoras para ChatGPT.", result)
 
+    def test_generate_news_briefing_sends_api_key_as_header_not_query_string(self):
+        captured = {}
+
+        class FakeResponse:
+            def raise_for_status(self):
+                return None
+
+            def json(self):
+                return {
+                    "candidates": [
+                        {"content": {"parts": [{"text": "🏛 España: Test"}]}}
+                    ]
+                }
+
+        def fake_post(url, headers, json, timeout):
+            captured["url"] = url
+            captured["headers"] = headers
+            return FakeResponse()
+
+        headline = {
+            "source": "ABC",
+            "title": "El Gobierno aprueba una nueva ley",
+            "description": "",
+        }
+
+        with patch.object(bot, "GEMINI_API_KEY", "key"), \
+             patch.object(bot.requests, "post", side_effect=fake_post):
+            bot.generate_news_briefing([headline])
+
+        self.assertNotIn("key=", captured["url"])
+        self.assertEqual(captured["headers"]["x-goog-api-key"], "key")
+
     def test_news_briefing_html_highlights_why_it_matters(self):
         html = bot._format_news_briefing_html(
             "📰 BRIEFING",

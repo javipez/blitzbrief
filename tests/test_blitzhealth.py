@@ -124,6 +124,43 @@ class BlitzHealthWeekendTests(unittest.TestCase):
         self.assertIn("Columna de la semana", captured["prompt"])
         self.assertIn("Análisis internacional", captured["prompt"])
 
+    def test_generate_weekend_digest_sends_api_key_as_header_not_query_string(self):
+        captured = {}
+
+        class FakeResponse:
+            def raise_for_status(self):
+                return None
+
+            def json(self):
+                return {
+                    "candidates": [
+                        {"content": {"parts": [{"text": "📚 PANORAMA SEMANAL\nTest"}]}}
+                    ]
+                }
+
+        def fake_post(url, headers, json, timeout):
+            captured["url"] = url
+            captured["headers"] = headers
+            return FakeResponse()
+
+        author_articles = [
+            {
+                "title": "Columna de la semana",
+                "url": "https://example.com/columna",
+                "author": "Autor",
+                "source": "El País",
+                "date": datetime(2026, 6, 14, tzinfo=timezone.utc),
+                "subtitle": "Resumen columna",
+            }
+        ]
+
+        with patch.object(health, "GEMINI_API_KEY", "key"), \
+             patch.object(health.requests, "post", side_effect=fake_post):
+            health.generate_weekend_digest({}, author_articles, [])
+
+        self.assertNotIn("key=", captured["url"])
+        self.assertEqual(captured["headers"]["x-goog-api-key"], "key")
+
     def test_digest_rich_html_formats_sections_lists_and_links(self):
         html = health._format_digest_rich_html(
             "📚 BLITZ WEEKEND",

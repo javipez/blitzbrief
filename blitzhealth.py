@@ -412,7 +412,6 @@ LECTURAS LARGAS / CONTEXTO:
     url = (
         "https://generativelanguage.googleapis.com/v1beta/models/"
         "gemini-2.5-flash:generateContent"
-        f"?key={GEMINI_API_KEY}"
     )
     payload = {
         "contents": [{"parts": [{"text": prompt}]}],
@@ -425,7 +424,10 @@ LECTURAS LARGAS / CONTEXTO:
         try:
             resp = requests.post(
                 url,
-                headers={"content-type": "application/json"},
+                headers={
+                    "content-type": "application/json",
+                    "x-goog-api-key": GEMINI_API_KEY,
+                },
                 json=payload,
                 timeout=90,
             )
