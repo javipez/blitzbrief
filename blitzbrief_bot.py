@@ -2293,7 +2293,7 @@ TITULARES (única fuente válida):
 
     url = (
         "https://generativelanguage.googleapis.com/v1beta/models/"
-        "gemini-3-flash:generateContent"
+        "gemini-3-flash-preview:generateContent"
     )
     payload = {
         "contents": [{"parts": [{"text": prompt}]}],
