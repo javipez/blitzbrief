@@ -658,9 +658,72 @@ class BlitzBriefTests(unittest.TestCase):
             result = bot.generate_news_briefing([headline])
 
         self.assertEqual(result, "🏛 España: Test")
-        self.assertIn("por qué importa", captured["prompt"])
+        self.assertIn("criterio de selección", captured["prompt"])
         self.assertIn("prioridad: 2.0", captured["prompt"])
         self.assertIn("ABC, El País", captured["prompt"])
+
+    def test_generate_news_briefing_prompt_defines_por_que_importa(self):
+        captured = {}
+
+        class FakeResponse:
+            def raise_for_status(self):
+                return None
+
+            def json(self):
+                return {
+                    "candidates": [
+                        {"content": {"parts": [{"text": "🏛 España: Test"}]}}
+                    ]
+                }
+
+        def fake_post(url, headers, json, timeout):
+            captured["prompt"] = json["contents"][0]["parts"][0]["text"]
+            return FakeResponse()
+
+        headline = {
+            "source": "ABC",
+            "title": "El Gobierno aprueba una nueva ley",
+            "description": "",
+        }
+
+        with patch.object(bot, "GEMINI_API_KEY", "key"), \
+             patch.object(bot.requests, "post", side_effect=fake_post):
+            bot.generate_news_briefing([headline])
+
+        self.assertIn("NUNCA debe repetir ni parafrasear el titular", captured["prompt"])
+        self.assertIn("OMITE la línea", captured["prompt"])
+
+    def test_generate_news_briefing_prompt_marks_selection_signal_as_not_copyable(self):
+        captured = {}
+
+        class FakeResponse:
+            def raise_for_status(self):
+                return None
+
+            def json(self):
+                return {
+                    "candidates": [
+                        {"content": {"parts": [{"text": "🏛 España: Test"}]}}
+                    ]
+                }
+
+        def fake_post(url, headers, json, timeout):
+            captured["prompt"] = json["contents"][0]["parts"][0]["text"]
+            return FakeResponse()
+
+        headline = {
+            "source": "ABC",
+            "title": "El Gobierno aprueba una nueva ley",
+            "description": "",
+            "why_it_matters": "Conecta con tus intereses: economía personal.",
+        }
+
+        with patch.object(bot, "GEMINI_API_KEY", "key"), \
+             patch.object(bot.requests, "post", side_effect=fake_post):
+            bot.generate_news_briefing([headline])
+
+        self.assertIn("uso interno, NO copiar", captured["prompt"])
+        self.assertNotIn("| por qué importa:", captured["prompt"])
 
     def test_generate_news_briefing_filters_ungrounded_tech_block(self):
         class FakeResponse:
@@ -796,6 +859,25 @@ class BlitzBriefTests(unittest.TestCase):
         self.assertIn("<blockquote><b>Por qué importa:</b> Afecta a &lt;mercados&gt;.</blockquote>", html)
         self.assertIn("<details open><summary>Partidos de hoy</summary><ul>", html)
         self.assertIn("<li>Real Madrid - Málaga</li>", html)
+
+    def test_news_briefing_html_renders_section_without_why_it_matters(self):
+        html = bot._format_news_briefing_html(
+            "📰 BRIEFING",
+            "🌍 Internacional: Test sin línea de por qué importa",
+        )
+
+        self.assertIn("Test sin línea de por qué importa", html)
+        self.assertNotIn("Por qué importa", html)
+
+    def test_news_briefing_rich_html_renders_section_without_why_it_matters(self):
+        html = bot._format_news_briefing_rich_html(
+            "📰 BRIEFING",
+            "🌍 Internacional: Test sin línea de por qué importa",
+        )
+
+        self.assertIn("<h2>🌍 Internacional</h2>", html)
+        self.assertIn("<p>Test sin línea de por qué importa</p>", html)
+        self.assertNotIn("<blockquote>", html)
 
     def test_preview_news_briefing_does_not_send_to_telegram(self):
         headline = {

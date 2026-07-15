@@ -2241,7 +2241,7 @@ def generate_news_briefing(headlines: list[dict]) -> Optional[str]:
         if score:
             headlines_text += f" | prioridad: {score}"
         if why:
-            headlines_text += f" | por qué importa: {why}"
+            headlines_text += f" | criterio de selección (uso interno, NO copiar): {why}"
         if orientations:
             headlines_text += f" | orientación fuentes: {orientations}"
         headlines_text += "\n"
@@ -2255,6 +2255,7 @@ ANTI-ALUCINACIÓN (lo más importante):
 - USA EXCLUSIVAMENTE los titulares listados abajo. Si una noticia no aparece literalmente en esa lista, NO LA INCLUYAS.
 - NO uses tu conocimiento previo del mundo, ni hechos que recuerdes, ni contexto histórico, ni sucesos que "podrían" estar pasando.
 - NO inventes nombres, cifras, capturas, dimisiones, victorias, fichajes, lesiones ni detenciones.
+- Esta prohibición aplica a HECHOS. Inferir la relevancia o consecuencia plausible de un titular real SÍ está permitido (ver bloque "POR QUÉ IMPORTA" más abajo).
 - Si una sección no tiene un titular concreto y verificable en la lista, OMÍTELA por completo (no escribas la línea).
 - Antes de redactar cada línea, comprueba mentalmente que cada dato proviene de un titular concreto de la lista.
 - En caso de duda, OMITE la sección. Es mejor un briefing corto que uno con datos inventados.
@@ -2262,12 +2263,24 @@ ANTI-ALUCINACIÓN (lo más importante):
 SELECCIÓN:
 - Para cada sección, elige el titular MÁS IMPORTANTE de los listados que encaje en esa categoría y resúmelo en una frase corta.
 - Si dos titulares se contradicen, elige el más reciente o el de la fuente más fiable.
-- Usa las señales de prioridad y "por qué importa" como ayuda editorial, pero no inventes detalles.
+- Usa las señales de prioridad y "criterio de selección" solo para ELEGIR titulares; nunca las copies en el texto.
 - Cuando una noticia tenga varias fuentes, puedes usarlo como señal de relevancia/pluralidad.
 
-FORMATO (dos líneas por sección, omite el bloque entero si no hay titular adecuado):
+POR QUÉ IMPORTA (regla de oro):
+- La línea "Por qué importa" debe responder a UNA de estas preguntas: ¿qué consecuencia tiene?, ¿a quién afecta y cómo?, ¿qué cambia respecto a antes? NUNCA debe repetir ni parafrasear el titular.
+- PROHIBIDO: repetir el titular con otras palabras, añadir solo un detalle más del mismo hecho, o generalidades vacías ("es relevante", "es importante para el sector").
+- Puedes INFERIR la relevancia con sentido común (consecuencias plausibles, a quién afecta), pero SIN añadir hechos nuevos: nada de nombres, cifras, fechas ni sucesos que no estén en el titular.
+- Si no puedes decir nada útil que NO esté ya en el titular, OMITE la línea "Por qué importa" de esa sección (la noticia sola es válida).
+
+EJEMPLOS DE ESTILO (solo ilustran el formato; JAMÁS los incluyas como noticias):
+- MAL:  "El banco central sube los tipos — Por qué importa: Los tipos de interés suben." (repite el titular)
+- BIEN: "El banco central sube los tipos — Por qué importa: Encarece hipotecas y préstamos para las familias."
+- MAL:  "Sale la beta de un sistema operativo — Por qué importa: La beta incluye nuevas funciones." (solo añade detalle)
+- BIEN: "Sale la beta de un sistema operativo — Por qué importa: Cualquiera puede probarla ya antes del lanzamiento oficial."
+
+FORMATO (dos líneas por sección, omite el bloque entero si no hay titular adecuado; la línea "Por qué importa" es opcional y se omite si sería redundante):
 🌍 Internacional: [la noticia internacional más importante hoy]
-   Por qué importa: [frase muy breve basada en el titular o en la señal "por qué importa"]
+   Por qué importa: [frase muy breve]
 🏛 España: [la noticia nacional más relevante hoy]
    Por qué importa: [frase muy breve]
 💰 Economía: [solo si hay algo económico realmente destacable]
@@ -2280,8 +2293,8 @@ FORMATO (dos líneas por sección, omite el bloque entero si no hay titular adec
    Por qué importa: [frase muy breve]
 
 ESTILO:
-- UNA sola noticia por sección, en UNA frase de máximo 15 palabras.
-- "Por qué importa" debe tener máximo 14 palabras.
+- UNA sola noticia por sección, en UNA frase de máximo 15 palabras que contenga el HECHO concreto (qué pasó y quién). Evita vaguedades tipo "novedades en X" o "polémica por Y" si el titular original da el dato.
+- "Por qué importa" debe tener máximo 18 palabras.
 - Para Tech: ignora noticias sobre productos ya lanzados hace días/semanas. Solo incluye si es algo nuevo de hoy.
 - Para Deporte: incluye cualquier noticia sobre Real Madrid o Málaga CF: resultados, fichajes, crónicas, lesiones, ruedas de prensa, etc. No te limites solo a partidos de hoy.
 - Todo en español.
