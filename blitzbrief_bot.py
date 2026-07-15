@@ -2385,6 +2385,42 @@ def send_news_briefing() -> bool:
     return success
 
 
+def preview_news_briefing() -> None:
+    """Genera el briefing y lo imprime en pantalla, sin enviarlo a Telegram."""
+    log.info("[Briefing] Recopilando titulares (modo preview)...")
+    headlines = fetch_news_headlines()
+
+    if not headlines:
+        print("No se obtuvieron titulares.")
+        return
+
+    curated_headlines = curate_news_headlines(headlines)
+    print(
+        f"{len(headlines)} titulares recopilados; "
+        f"{len(curated_headlines)} tras curación.\n"
+    )
+    briefing = generate_news_briefing(curated_headlines)
+
+    now = datetime.now(ZoneInfo("Europe/Madrid"))
+    date_str = now.strftime("%d/%m/%Y")
+
+    if briefing:
+        header = f"📰 BRIEFING DE NOTICIAS — {date_str}"
+    else:
+        print("Gemini no disponible, mostrando titulares en bruto.\n")
+        seen_titles: set[str] = set()
+        lines = [f"📰 TITULARES — {date_str}", ""]
+        for h in curated_headlines:
+            if h["title"] in seen_titles:
+                continue
+            seen_titles.add(h["title"])
+            lines.append(f"• [{h['source']}] {h['title']}")
+        briefing = "\n".join(lines[2:])
+        header = lines[0]
+
+    print(f"{header}\n\n{briefing}")
+
+
 def _format_news_briefing_rich_html(
     header: str, briefing: str, fixtures_section: str = ""
 ) -> str:
@@ -3198,6 +3234,8 @@ def main():
         run_digest(mode="evening")
     elif "--morning" in sys.argv:
         run_digest(mode="morning")
+    elif "--preview-briefing" in sys.argv:
+        preview_news_briefing()
     else:
         run_digest(mode="full")
 

@@ -797,6 +797,23 @@ class BlitzBriefTests(unittest.TestCase):
         self.assertIn("<details open><summary>Partidos de hoy</summary><ul>", html)
         self.assertIn("<li>Real Madrid - Málaga</li>", html)
 
+    def test_preview_news_briefing_does_not_send_to_telegram(self):
+        headline = {
+            "source": "ABC",
+            "title": "El Gobierno aprueba una nueva ley",
+            "description": "",
+        }
+
+        with patch.object(bot, "fetch_news_headlines", return_value=[headline]), \
+             patch.object(bot, "generate_news_briefing", return_value="🏛 España: Test") as gen, \
+             patch.object(bot, "_send_rich_html_message") as send_rich, \
+             patch.object(bot, "send_telegram_message") as send_plain:
+            bot.preview_news_briefing()
+
+        gen.assert_called_once()
+        send_rich.assert_not_called()
+        send_plain.assert_not_called()
+
     def test_send_rich_html_message_uses_send_rich_message_payload(self):
         captured = {}
 
