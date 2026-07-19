@@ -15,6 +15,7 @@ Uso:
 """
 
 import os
+import re
 import sys
 import time
 import json
@@ -256,6 +257,147 @@ def fetch_all_sources(
     return result
 
 
+# ---------------------------------------------------------------------------
+# Relevancia real de artículos del weekend (autores / lecturas largas)
+# ---------------------------------------------------------------------------
+#
+# Antes esto se resolvía ordenando por fecha y cortando a N artículos: cero
+# señal editorial, Gemini elegía "las mejores lecturas" de una lista sin
+# ranking real. Aquí se agrupan los artículos por tema compartido (¿cuántos
+# autores distintos escribieron sobre algo parecido esta semana? — la señal
+# más fuerte de que algo importó) y se puntúan antes de truncar, para no
+# repetir la arbitrariedad de cortar por fecha antes de saber qué es relevante.
+
+def _weekend_article_tokens(article: dict) -> set[str]:
+    """Tokens del título del artículo (reutiliza el tokenizador del briefing diario)."""
+    import blitzbrief_bot as press_bot
+
+    return press_bot._briefing_tokens(article.get("title", ""))
+
+
+def _weekend_articles_share_theme(a: dict, b: dict, min_overlap: int = 2) -> bool:
+    """Overlap de tokens de título entre dos artículos.
+
+    Umbral más laxo que el de titulares de prensa (min_overlap=2, no 3):
+    dos columnas sobre el mismo tema rara vez repiten ≥3 palabras del
+    título, a diferencia de titulares de agencia que sí suelen coincidir
+    casi literalmente.
+    """
+    tokens_a = _weekend_article_tokens(a)
+    tokens_b = _weekend_article_tokens(b)
+    if not tokens_a or not tokens_b:
+        return False
+    return len(tokens_a & tokens_b) >= min_overlap
+
+
+def _cluster_weekend_articles(articles: list[dict]) -> list[list[dict]]:
+    """Agrupa artículos que tratan un tema similar (mismo patrón que curate_news_headlines)."""
+    groups: list[list[dict]] = []
+    for article in articles:
+        for group in groups:
+            if any(_weekend_articles_share_theme(article, existing) for existing in group):
+                group.append(article)
+                break
+        else:
+            groups.append([article])
+    return groups
+
+
+def _matched_weekend_interests(article: dict) -> list[str]:
+    """Intereses configurados que coinciden con el artículo.
+
+    Reutiliza INTEREST_KEYWORDS del briefing diario. Las categorías
+    deportivas/locales simplemente no harán match en columnas de
+    salud/opinión — son no-ops inofensivos, no hace falta filtrarlas.
+    """
+    import blitzbrief_bot as press_bot
+
+    text = press_bot._normalize_text(
+        f"{article.get('title', '')} {article.get('subtitle', '')} "
+        f"{article.get('content', '')[:300]}"
+    )
+    matches: list[str] = []
+    for interest, keywords in press_bot.INTEREST_KEYWORDS.items():
+        if any(
+            re.search(rf"\b{re.escape(press_bot._normalize_text(keyword))}\b", text)
+            for keyword in keywords
+        ):
+            matches.append(interest)
+    return matches
+
+
+def _score_weekend_article(article: dict, cluster_size: int, cutoff: datetime) -> float:
+    """Puntúa un artículo del weekend por relevancia real, no solo por fecha.
+
+    Señal principal: cuántos autores distintos trataron un tema parecido
+    esta semana (cluster_size). Señales secundarias: intereses configurados,
+    recencia dentro de la ventana de 7 días, y profundidad del texto.
+    """
+    score = 0.0
+    score += min(cluster_size - 1, 3) * 0.6
+    score += 0.15 * len(_matched_weekend_interests(article))
+
+    article_date = article.get("date")
+    if article_date:
+        age_fraction = (article_date - cutoff) / timedelta(days=LOOKBACK_DAYS)
+        score += 0.3 * max(0.0, min(1.0, age_fraction))
+
+    if len(article.get("content", "")) > 800:
+        score += 0.1
+
+    return round(score, 2)
+
+
+def _why_weekend_article_matters(article: dict, cluster_size: int) -> str:
+    """Motivo legible de por qué se seleccionó este artículo (uso interno)."""
+    if cluster_size > 1:
+        others = cluster_size - 1
+        plural = "s" if others > 1 else ""
+        return (
+            f"Coincide con otro{plural} {others} autor{plural} tratando "
+            "un tema similar esta semana."
+        )
+
+    interests = _matched_weekend_interests(article)
+    if interests:
+        return f"Conecta con tus intereses: {', '.join(interests[:3])}."
+
+    if len(article.get("content", "")) > 800:
+        return "Pieza extensa, con más profundidad que el resto de la semana."
+
+    return "Publicación reciente de la semana sin señales adicionales de relevancia."
+
+
+def curate_weekend_articles(articles: list[dict], max_items: int) -> list[dict]:
+    """Agrupa por tema compartido y ordena por relevancia real antes de truncar.
+
+    Clave: la agrupación/puntuación se hace sobre TODOS los artículos de la
+    semana, antes de cortar a `max_items` — si se cortara primero por fecha
+    (como antes) se repetiría la arbitrariedad de hoy con lo que quede fuera.
+    """
+    if not articles:
+        return []
+
+    cutoff = datetime.now(timezone.utc) - timedelta(days=LOOKBACK_DAYS)
+    clusters = _cluster_weekend_articles(articles)
+
+    curated: list[dict] = []
+    for cluster in clusters:
+        cluster_size = len(cluster)
+        best = max(
+            cluster,
+            key=lambda art: art.get("date") or datetime.min.replace(tzinfo=timezone.utc),
+        )
+        enriched = dict(best)
+        enriched["cluster_size"] = cluster_size
+        enriched["relevance_score"] = _score_weekend_article(best, cluster_size, cutoff)
+        enriched["why_relevant"] = _why_weekend_article_matters(best, cluster_size)
+        curated.append(enriched)
+
+    curated.sort(key=lambda art: art["relevance_score"], reverse=True)
+    return curated[:max_items]
+
+
 def _load_weekend_authors() -> dict[str, dict[str, str]]:
     """Carga los autores configurados para incluir lecturas del fin de semana."""
     if not AUTHORS_FILE.exists():
@@ -293,11 +435,7 @@ def fetch_weekend_author_articles(errors: Optional[list] = None) -> list[dict]:
         log.info(f"[Weekend autores] RSS — {author}")
         articles.extend(press_bot.fetch_rss_articles(author, feed_url, cutoff, errors))
 
-    articles.sort(
-        key=lambda art: art.get("date") or datetime.min.replace(tzinfo=timezone.utc),
-        reverse=True,
-    )
-    return articles[:12]
+    return curate_weekend_articles(articles, max_items=12)
 
 
 def fetch_weekend_longform_articles(errors: Optional[list] = None) -> list[dict]:
@@ -312,11 +450,7 @@ def fetch_weekend_longform_articles(errors: Optional[list] = None) -> list[dict]
             article["source"] = source
         articles.extend(source_articles)
 
-    articles.sort(
-        key=lambda art: art.get("date") or datetime.min.replace(tzinfo=timezone.utc),
-        reverse=True,
-    )
-    return articles[:6]
+    return curate_weekend_articles(articles, max_items=6)
 
 
 # ---------------------------------------------------------------------------
@@ -334,6 +468,9 @@ def _format_articles_for_prompt(articles: list[dict]) -> str:
         content += f"\n[{date_str}] {art.get('author', art.get('source', 'Fuente'))}: {art['title']}\n"
         content += f"Fuente: {art.get('source', '')}\n"
         content += f"URL: {art['url']}\n"
+        why_relevant = art.get("why_relevant", "")
+        if why_relevant:
+            content += f"criterio de selección (uso interno, NO copiar): {why_relevant}\n"
         if art.get("content"):
             content += f"{art['content'][:1200]}\n"
         elif art.get("subtitle"):
@@ -378,13 +515,22 @@ def generate_weekend_digest(
 A partir del contenido publicado esta semana, genera un digest en español con esta estructura exacta:
 
 📚 PANORAMA SEMANAL
-3-5 líneas con los temas o lecturas que mejor resumen la semana. Nada genérico.
+3-5 líneas INDEPENDIENTES, una por cada tema o lectura destacada de la semana. Cada línea se sostiene por sí sola. NO fuerces una narrativa única que las conecte todas: la mayoría de las semanas los temas destacados NO tienen relación real entre sí, y eso está bien.
+
+REGLA DE ORO del Panorama (evita lo genérico):
+- PROHIBIDO inventar un hilo conductor artificial entre temas que no lo tienen realmente (ej: unir un debate sobre el calor, el fin de un programa de radio y una reflexión sobre IA como si fueran "la misma semana reflexionando sobre algo", cuando son simplemente noticias distintas).
+- SÍ puedes mencionar una conexión entre dos o más lecturas si es real y concreta (mismo suceso, mismo autor, cita explícita entre ellas). No está prohibido conectar, está prohibido inventar una conexión falsa.
+- Si no hay una conexión real, preséntalas como temas separados: no uses frases tipo "todo esto refleja...", "en conjunto...", "el hilo conductor de la semana es..." salvo que sea literalmente cierto.
+
+EJEMPLOS del Panorama (solo ilustran el formato; JAMÁS los repitas como noticias):
+- MAL: "La semana queda marcada por la resaca del Mundial, analizada desde la estadística y la geopolítica de las identidades. En el plano social, el debate sobre el calor y el fin de una era en la radio coinciden con una reflexión sobre la autenticidad frente al ruido de la IA." (fuerza una narrativa única sobre temas sin relación real)
+- BIEN: "El Mundial se analiza esta semana desde la estadística avanzada y la geopolítica de las identidades. Aparte, el calor extremo reabre el debate sobre adaptación urbana. Se despide un histórico programa de radio de autor. Y una columna reflexiona sobre autenticidad frente a IA." (mismos temas, sin inventar un vínculo que no existe)
 
 🧠 SALUD / LONGEVIDAD
 Resume lo más importante de salud, fitness y longevidad. Incluye enlaces.
 
 🗞️ COLUMNAS Y AUTORES
-Selecciona las mejores lecturas de autores de la semana. No listes todo: prioriza 4-8 piezas. Incluye enlaces.
+Prioriza los artículos con mayor señal de relevancia (ver "criterio de selección" de cada uno, uso interno). Si dos o más autores trataron el mismo tema esta semana, inclúyelo casi con seguridad — es la señal más fuerte de que importó. No listes todo: prioriza 4-8 piezas. Incluye enlaces. Nunca copies la etiqueta "criterio de selección" ni su texto en la salida final.
 
 🌍 LECTURAS LARGAS / CONTEXTO
 Resume análisis o textos largos relevantes. Incluye enlaces.
@@ -658,12 +804,44 @@ def send_telegram_digest(digest: str) -> bool:
     )
 
 
+def preview_weekend_digest() -> None:
+    """Genera el digest semanal y lo imprime en pantalla, sin enviarlo a Telegram."""
+    log.info("[Weekend] Recopilando fuentes (modo preview)...")
+    fetch_errors: list[str] = []
+    health_data = fetch_all_sources(fetch_errors)
+    author_articles = fetch_weekend_author_articles(fetch_errors)
+    longform_articles = fetch_weekend_longform_articles(fetch_errors)
+
+    print(f"Autores: {len(author_articles)} artículos tras curación.")
+    for art in author_articles:
+        print(
+            f"  [{art.get('relevance_score', 0):.2f}] "
+            f"{art.get('author', '')}: {art['title']}"
+        )
+        print(f"    {art.get('why_relevant', '')}")
+
+    print(f"\nLecturas largas: {len(longform_articles)} artículos tras curación.")
+    for art in longform_articles:
+        print(
+            f"  [{art.get('relevance_score', 0):.2f}] "
+            f"{art.get('author', '')}: {art['title']}"
+        )
+        print(f"    {art.get('why_relevant', '')}")
+
+    digest = generate_weekend_digest(health_data, author_articles, longform_articles)
+    print(f"\n{digest or 'Gemini no disponible.'}")
+
+
 # ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
 
 def main() -> None:
     log.info("=== Blitz Weekend — Digest semanal ===")
+
+    if "--preview-weekend" in sys.argv:
+        preview_weekend_digest()
+        return
 
     # 1. Scrapear fuentes
     fetch_errors: list[str] = []

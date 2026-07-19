@@ -1,5 +1,5 @@
 import unittest
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from unittest.mock import patch
 
 import blitzhealth as health
@@ -227,6 +227,204 @@ class BlitzHealthWeekendTests(unittest.TestCase):
         self.assertIn("B" * 2000, plain_calls[0])
         self.assertNotIn("A" * 2000, plain_calls[0])
         self.assertNotIn("FALLBACK TEXT", plain_calls[0])
+
+    def test_cluster_weekend_articles_groups_shared_theme_across_authors(self):
+        article_a = {
+            "title": "La inflación golpea a las familias españolas",
+            "author": "Autor X",
+        }
+        article_b = {
+            "title": "Familias españolas sufren la inflación disparada",
+            "author": "Autor Y",
+        }
+        article_c = {
+            "title": "El nuevo iPhone sorprende por su batería",
+            "author": "Autor Z",
+        }
+
+        clusters = health._cluster_weekend_articles([article_a, article_b, article_c])
+
+        sizes = sorted(len(group) for group in clusters)
+        self.assertEqual(sizes, [1, 2])
+        themed_cluster = next(group for group in clusters if len(group) == 2)
+        self.assertIn(article_a, themed_cluster)
+        self.assertIn(article_b, themed_cluster)
+
+    def test_curate_weekend_articles_prioritizes_cross_author_theme_over_recency(self):
+        now = datetime.now(timezone.utc)
+        older_a = {
+            "title": "La inflación golpea a las familias españolas",
+            "author": "Autor X",
+            "url": "https://example.com/a",
+            "date": now - timedelta(days=6),
+            "content": "",
+        }
+        older_b = {
+            "title": "Familias españolas sufren la inflación disparada",
+            "author": "Autor Y",
+            "url": "https://example.com/b",
+            "date": now - timedelta(days=6) + timedelta(hours=1),
+            "content": "",
+        }
+        newer_isolated = {
+            "title": "El nuevo iPhone sorprende por su batería",
+            "author": "Autor Z",
+            "url": "https://example.com/c",
+            "date": now - timedelta(hours=2),
+            "content": "",
+        }
+
+        curated = health.curate_weekend_articles(
+            [older_a, older_b, newer_isolated], max_items=2
+        )
+
+        self.assertEqual(len(curated), 2)
+        # El artículo más viejo pero corroborado por otro autor gana al
+        # artículo más reciente pero aislado: la señal de tema compartido
+        # pesa más que la pura recencia.
+        self.assertEqual(curated[0]["cluster_size"], 2)
+        self.assertGreater(curated[0]["relevance_score"], curated[1]["relevance_score"])
+
+    def test_curate_weekend_articles_respects_max_items(self):
+        now = datetime.now(timezone.utc)
+        titles = [
+            "El aumento del precio de la vivienda preocupa a los jóvenes",
+            "Un nuevo estudio sobre el sueño y la longevidad",
+            "La final de baloncesto deja polémica arbitral",
+            "Una novela histórica ambientada en el Mediterráneo",
+            "El auge de los coches eléctricos en Noruega",
+        ]
+        articles = [
+            {
+                "title": title,
+                "author": f"Autor {i}",
+                "url": f"https://example.com/{i}",
+                "date": now - timedelta(days=i),
+                "content": "",
+            }
+            for i, title in enumerate(titles)
+        ]
+
+        curated = health.curate_weekend_articles(articles, max_items=2)
+
+        self.assertEqual(len(curated), 2)
+
+    def test_why_weekend_article_matters_labels_cluster_signal(self):
+        reason = health._why_weekend_article_matters(
+            {"title": "Cualquiera", "content": ""}, cluster_size=2
+        )
+        self.assertIn("Coincide con", reason)
+
+    def test_why_weekend_article_matters_labels_matched_interest(self):
+        reason = health._why_weekend_article_matters(
+            {"title": "Reflexión sobre la IA generativa", "content": ""},
+            cluster_size=1,
+        )
+        self.assertIn("Conecta con tus intereses", reason)
+
+    def test_generate_weekend_digest_labels_selection_criteria_as_internal(self):
+        captured = {}
+
+        class FakeResponse:
+            def raise_for_status(self):
+                return None
+
+            def json(self):
+                return {
+                    "candidates": [
+                        {"content": {"parts": [{"text": "📚 PANORAMA SEMANAL\nTest"}]}}
+                    ]
+                }
+
+        def fake_post(url, headers, json, timeout):
+            captured["prompt"] = json["contents"][0]["parts"][0]["text"]
+            return FakeResponse()
+
+        author_articles = [
+            {
+                "title": "Columna de la semana",
+                "url": "https://example.com/columna",
+                "author": "Autor",
+                "source": "El País",
+                "date": datetime(2026, 6, 14, tzinfo=timezone.utc),
+                "subtitle": "Resumen columna",
+                "why_relevant": "Coincide con otro 1 autor tratando un tema similar esta semana.",
+            }
+        ]
+
+        with patch.object(health, "GEMINI_API_KEY", "key"), \
+             patch.object(health.requests, "post", side_effect=fake_post):
+            health.generate_weekend_digest({}, author_articles, [])
+
+        self.assertIn("criterio de selección (uso interno, NO copiar)", captured["prompt"])
+        self.assertIn("Nunca copies la etiqueta", captured["prompt"])
+        self.assertIn(
+            "Coincide con otro 1 autor tratando un tema similar esta semana.",
+            captured["prompt"],
+        )
+
+    def test_generate_weekend_digest_prompt_defines_panorama_golden_rule(self):
+        captured = {}
+
+        class FakeResponse:
+            def raise_for_status(self):
+                return None
+
+            def json(self):
+                return {
+                    "candidates": [
+                        {"content": {"parts": [{"text": "📚 PANORAMA SEMANAL\nTest"}]}}
+                    ]
+                }
+
+        def fake_post(url, headers, json, timeout):
+            captured["prompt"] = json["contents"][0]["parts"][0]["text"]
+            return FakeResponse()
+
+        author_articles = [
+            {
+                "title": "Columna de la semana",
+                "url": "https://example.com/columna",
+                "author": "Autor",
+                "source": "El País",
+                "date": datetime(2026, 6, 14, tzinfo=timezone.utc),
+                "subtitle": "Resumen columna",
+            }
+        ]
+
+        with patch.object(health, "GEMINI_API_KEY", "key"), \
+             patch.object(health.requests, "post", side_effect=fake_post):
+            health.generate_weekend_digest({}, author_articles, [])
+
+        prompt = captured["prompt"]
+        self.assertIn("PROHIBIDO inventar un hilo conductor artificial", prompt)
+        self.assertIn("SÍ puedes mencionar una conexión", prompt)
+        self.assertIn("El Mundial se analiza esta semana desde la estadística avanzada", prompt)
+
+    def test_preview_weekend_digest_does_not_send_to_telegram(self):
+        send_calls = []
+
+        with patch.object(health, "fetch_all_sources", return_value={}), \
+             patch.object(health, "fetch_weekend_author_articles", return_value=[]), \
+             patch.object(health, "fetch_weekend_longform_articles", return_value=[]), \
+             patch.object(
+                 health, "generate_weekend_digest", return_value="📚 PANORAMA SEMANAL\nTest"
+             ), \
+             patch.object(
+                 health, "send_telegram_text",
+                 side_effect=lambda *a, **k: send_calls.append("text"),
+             ), \
+             patch.object(
+                 health, "send_telegram_digest",
+                 side_effect=lambda *a, **k: send_calls.append("digest"),
+             ), \
+             patch.object(
+                 health, "_send_rich_html_message",
+                 side_effect=lambda *a, **k: send_calls.append("rich"),
+             ):
+            health.preview_weekend_digest()
+
+        self.assertEqual(send_calls, [])
 
     def test_send_html_message_first_chunk_failure_resends_whole_fallback(self):
         text = ("A" * 2000) + "\n\n" + ("B" * 2000)
