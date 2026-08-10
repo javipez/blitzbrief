@@ -3012,6 +3012,44 @@ def run_digest(notify_empty: bool = False, mode: str = "morning") -> None:
 # Modo bot interactivo (polling de Telegram)
 # ---------------------------------------------------------------------------
 
+# Única fuente de verdad de los comandos: alimenta el menú de Telegram
+# (botón "/" del chat) y el texto de /help. Las descripciones deben ser
+# cortas: Telegram las muestra en una línea.
+BOT_COMMANDS: list[tuple[str, str]] = [
+    ("update", "Consultar artículos nuevos ahora"),
+    ("briefing", "Briefing de noticias con IA"),
+    ("random", "Artículo aleatorio de un autor"),
+    ("status", "Ver autores y fuentes configurados"),
+    ("add", "Añadir un autor a seguir"),
+    ("remove", "Dejar de seguir a un autor"),
+    ("help", "Qué sé hacer"),
+]
+
+
+def register_bot_commands() -> bool:
+    """Registra el menú de comandos en Telegram (botón '/' del chat)."""
+    if not TELEGRAM_BOT_TOKEN:
+        log.error("Falta TELEGRAM_BOT_TOKEN: no puedo registrar el menú.")
+        return False
+
+    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/setMyCommands"
+    payload = {
+        "commands": [
+            {"command": cmd, "description": desc} for cmd, desc in BOT_COMMANDS
+        ]
+    }
+    try:
+        resp = requests.post(url, json=payload, timeout=15)
+        data = resp.json()
+        if data.get("ok"):
+            log.info(f"Menú de comandos registrado ({len(BOT_COMMANDS)} comandos).")
+            return True
+        log.warning(f"setMyCommands devolvió error: {data}")
+        return False
+    except requests.RequestException as e:
+        log.warning(f"No se pudo registrar el menú de comandos: {e}")
+        return False
+
 
 def _get_updates(offset: int = 0) -> list[dict]:
     """Obtiene mensajes nuevos de Telegram con long polling."""
@@ -3172,18 +3210,15 @@ def _handle_command(text: str, chat_id: int) -> None:
         send_telegram_message("\n".join(lines))
 
     elif cmd == "/help" or cmd == "/start":
+        command_lines = "".join(
+            f"/{name} — {_escape_md(desc)}\n" for name, desc in BOT_COMMANDS
+        )
         help_text = (
             "👋 *BlitzBrief — Tu resumen de prensa*\n"
             "\n"
             "📋 *Comandos disponibles:*\n"
             "\n"
-            "/update — Consultar artículos ahora\n"
-            "/briefing — Briefing de noticias con IA\n"
-            "/random — Artículo aleatorio de un autor\n"
-            "/status — Ver autores configurados\n"
-            "/add — Añadir un autor\n"
-            "/remove — Eliminar un autor\n"
-            "/help — Este mensaje\n"
+            f"{command_lines}"
             "\n"
             "📝 *Ejemplos:*\n"
             "`/briefing` — resumen de noticias del día\n"
@@ -3199,6 +3234,8 @@ def serve() -> None:
     """Arranca el bot en modo polling (interactivo)."""
     log.info("BlitzBrief arrancado en modo bot. Esperando comandos...")
     log.info("Envía /update desde Telegram para forzar un digest.")
+
+    register_bot_commands()
 
     offset = 0
 
@@ -3243,6 +3280,8 @@ def main():
     load_authors()
     if "--serve" in sys.argv:
         serve()
+    elif "--register-commands" in sys.argv:
+        register_bot_commands()
     elif "--evening" in sys.argv:
         run_digest(mode="evening")
     elif "--morning" in sys.argv:

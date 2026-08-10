@@ -1159,6 +1159,37 @@ class BlitzBriefTests(unittest.TestCase):
 
         send_box.assert_not_called()
 
+    def test_register_bot_commands_sends_menu_to_telegram(self):
+        captured = {}
+
+        class FakeResponse:
+            def json(self):
+                return {"ok": True}
+
+        def fake_post(url, json, timeout):
+            captured["url"] = url
+            captured["commands"] = json["commands"]
+            return FakeResponse()
+
+        with patch.object(bot, "TELEGRAM_BOT_TOKEN", "token"), \
+             patch.object(bot.requests, "post", side_effect=fake_post):
+            self.assertTrue(bot.register_bot_commands())
+
+        self.assertIn("setMyCommands", captured["url"])
+        names = [c["command"] for c in captured["commands"]]
+        self.assertEqual(names, [name for name, _ in bot.BOT_COMMANDS])
+        for command in captured["commands"]:
+            self.assertRegex(command["command"], r"^[a-z0-9_]{1,32}$")
+            self.assertTrue(0 < len(command["description"]) <= 256)
+
+    def test_help_lists_every_menu_command(self):
+        with patch.object(bot, "send_telegram_message") as send:
+            bot._handle_command("/help", 1)
+
+        help_text = send.call_args[0][0]
+        for name, _ in bot.BOT_COMMANDS:
+            self.assertIn(f"/{name} —", help_text)
+
 
 if __name__ == "__main__":
     unittest.main()
