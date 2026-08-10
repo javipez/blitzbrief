@@ -503,6 +503,22 @@ def add_author(source: str, name: str, slug_or_url: str) -> str:
         )
 
 
+def find_authors(query: str) -> list[str]:
+    """Busca autores por coincidencia parcial, sin distinguir mayúsculas.
+
+    Si el texto coincide exactamente con un autor, devuelve solo ese: así
+    'Ana' no queda ambigua cuando existen 'Ana' y 'Ana María'.
+    """
+    query = query.strip().lower()
+    all_names = list(ELPAIS_AUTHORS) + list(ELPLURAL_AUTHORS) + list(RSS_AUTHORS)
+
+    exact = [name for name in all_names if name.lower() == query]
+    if exact:
+        return exact
+
+    return [name for name in all_names if query in name.lower()]
+
+
 def remove_author(name: str) -> str:
     """Elimina un autor de cualquier fuente. Devuelve mensaje de resultado."""
     if name in ELPAIS_AUTHORS:
@@ -3163,8 +3179,23 @@ def _handle_command(text: str, chat_id: int) -> None:
                 "`/remove Elvira Lindo`"
             )
             return
-        name = " ".join(parts[1:])
-        result = remove_author(name)
+        query = " ".join(parts[1:])
+        matches = find_authors(query)
+        if not matches:
+            send_telegram_message(
+                _escape_md(f"❌ No se encontró a '{query}' en ninguna fuente.")
+            )
+            return
+        if len(matches) > 1:
+            listado = "\n".join(f"  • {m}" for m in matches)
+            send_telegram_message(
+                _escape_md(
+                    f"🤔 '{query}' coincide con varios autores:\n{listado}\n\n"
+                    "Escribe el nombre completo del que quieras quitar."
+                )
+            )
+            return
+        result = remove_author(matches[0])
         send_telegram_message(_escape_md(result))
 
     elif cmd == "/random":

@@ -28,14 +28,19 @@ Bot de Telegram que cada mañana te envía un **briefing de noticias generado co
 |---------|-------------|
 | `/update` | Forzar un digest de columnas ahora |
 | `/briefing` | Briefing de noticias con IA on-demand |
+| `/weekend` | Lanzar el Blitz Weekend (digest semanal) ahora |
 | `/random` | Artículo aleatorio de un autor al azar |
 | `/random Jabois` | Artículo aleatorio de un autor concreto |
-| `/status` | Ver todos los autores configurados |
+| `/status` | Estado de los digests de hoy y autores configurados |
 | `/add elpais Nombre slug` | Añadir un autor de El País |
 | `/add elplural Nombre slug` | Añadir un autor de El Plural |
 | `/add rss Nombre url-feed` | Añadir un blog con RSS |
-| `/remove Nombre` | Eliminar un autor |
+| `/remove Jabois` | Eliminar un autor (acepta nombre parcial) |
 | `/help` | Ver todos los comandos |
+
+El menú "/" de Telegram se registra solo al arrancar en modo `--serve`
+(`setMyCommands`). Para registrarlo sin levantar el bot:
+`python blitzbrief_bot.py --register-commands`.
 
 ## Setup
 

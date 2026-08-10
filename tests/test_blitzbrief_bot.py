@@ -1207,6 +1207,46 @@ class BlitzBriefTests(unittest.TestCase):
 
         send.assert_not_called()
 
+    def test_remove_accepts_partial_name(self):
+        with patch.dict(bot.ELPAIS_AUTHORS,
+                        {"Manuel Jabois": "manuel-jabois"}, clear=True), \
+             patch.dict(bot.ELPLURAL_AUTHORS, {}, clear=True), \
+             patch.dict(bot.RSS_AUTHORS, {}, clear=True), \
+             patch.object(bot, "save_authors"), \
+             patch.object(bot, "send_telegram_message") as send:
+            bot._handle_command("/remove jabois", 1)
+            # Dentro del patch.dict: al salir se restaura el diccionario.
+            self.assertNotIn("Manuel Jabois", bot.ELPAIS_AUTHORS)
+
+        self.assertIn("Manuel Jabois", send.call_args[0][0])
+
+    def test_remove_asks_when_partial_name_is_ambiguous(self):
+        with patch.dict(bot.ELPAIS_AUTHORS,
+                        {"Ana García": "ana-garcia", "Ana Ruiz": "ana-ruiz"},
+                        clear=True), \
+             patch.dict(bot.ELPLURAL_AUTHORS, {}, clear=True), \
+             patch.dict(bot.RSS_AUTHORS, {}, clear=True), \
+             patch.object(bot, "save_authors") as save, \
+             patch.object(bot, "send_telegram_message") as send:
+            bot._handle_command("/remove Ana", 1)
+            self.assertEqual(len(bot.ELPAIS_AUTHORS), 2)
+
+        save.assert_not_called()
+        message = send.call_args[0][0]
+        self.assertIn("Ana García", message)
+        self.assertIn("Ana Ruiz", message)
+
+    def test_remove_exact_name_wins_over_partial_matches(self):
+        with patch.dict(bot.ELPAIS_AUTHORS,
+                        {"Ana": "ana", "Ana María": "ana-maria"}, clear=True), \
+             patch.dict(bot.ELPLURAL_AUTHORS, {}, clear=True), \
+             patch.dict(bot.RSS_AUTHORS, {}, clear=True), \
+             patch.object(bot, "save_authors"), \
+             patch.object(bot, "send_telegram_message"):
+            bot._handle_command("/remove Ana", 1)
+            self.assertNotIn("Ana", bot.ELPAIS_AUTHORS)
+            self.assertIn("Ana María", bot.ELPAIS_AUTHORS)
+
     def test_status_shows_todays_scheduled_blocks(self):
         with patch.object(bot, "datetime", FakeDateTime), \
              patch.object(bot, "load_sent_runs",
