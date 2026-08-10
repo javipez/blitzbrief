@@ -3018,6 +3018,7 @@ def run_digest(notify_empty: bool = False, mode: str = "morning") -> None:
 BOT_COMMANDS: list[tuple[str, str]] = [
     ("update", "Consultar artículos nuevos ahora"),
     ("briefing", "Briefing de noticias con IA"),
+    ("weekend", "Blitz Weekend: el resumen semanal"),
     ("random", "Artículo aleatorio de un autor"),
     ("status", "Ver autores y fuentes configurados"),
     ("add", "Añadir un autor a seguir"),
@@ -3049,6 +3050,38 @@ def register_bot_commands() -> bool:
     except requests.RequestException as e:
         log.warning(f"No se pudo registrar el menú de comandos: {e}")
         return False
+
+
+def run_weekend_digest() -> bool:
+    """Lanza el Blitz Weekend (blitzhealth.py) desde el bot interactivo."""
+    # Import perezoso: blitzhealth solo hace falta para este comando y así
+    # no pagamos su carga en cada arranque del bot.
+    try:
+        import blitzhealth
+    except ImportError as e:
+        log.error(f"[Weekend] No se pudo importar blitzhealth: {e}")
+        send_telegram_message(
+            _escape_md(f"❌ No pude cargar el Blitz Weekend: {e}")
+        )
+        return False
+
+    try:
+        blitzhealth.main()
+    except SystemExit:
+        # blitzhealth corta con sys.exit(1) cuando no hay contenido o Gemini
+        # falla, y en esos casos ya ha avisado por Telegram por su cuenta.
+        # Sin este except, el SystemExit tumbaría el bot entero.
+        log.warning("[Weekend] blitzhealth abortó; el motivo ya se notificó.")
+        return False
+    except Exception as e:
+        log.error(f"[Weekend] Error inesperado: {e}")
+        send_telegram_message(
+            _escape_md(f"❌ Error al generar el Blitz Weekend: {e}")
+        )
+        return False
+
+    log.info("[Weekend] Digest semanal enviado.")
+    return True
 
 
 def _get_updates(offset: int = 0) -> list[dict]:
@@ -3181,6 +3214,18 @@ def _handle_command(text: str, chat_id: int) -> None:
             send_telegram_message(
                 _escape_md("❌ No se pudo generar el briefing.")
             )
+
+    elif cmd == "/weekend":
+        if not GEMINI_API_KEY:
+            send_telegram_message(
+                _escape_md("❌ No hay API key de Gemini configurada.")
+            )
+            return
+        send_telegram_message(
+            "🗓 _Preparando el Blitz Weekend\\.\\.\\. "
+            "\\(tarda un par de minutos\\)_"
+        )
+        run_weekend_digest()
 
     elif cmd == "/status":
         lines = ["🔎 *BlitzBrief — Estado*", ""]

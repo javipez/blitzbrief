@@ -1,3 +1,5 @@
+import sys
+import types
 import unittest
 from datetime import date, datetime, timezone
 from unittest.mock import patch
@@ -1181,6 +1183,29 @@ class BlitzBriefTests(unittest.TestCase):
         for command in captured["commands"]:
             self.assertRegex(command["command"], r"^[a-z0-9_]{1,32}$")
             self.assertTrue(0 < len(command["description"]) <= 256)
+
+    def test_weekend_command_runs_weekend_digest(self):
+        with patch.object(bot, "GEMINI_API_KEY", "key"), \
+             patch.object(bot, "send_telegram_message"), \
+             patch.object(bot, "run_weekend_digest") as run_weekend:
+            bot._handle_command("/weekend", 1)
+
+        run_weekend.assert_called_once()
+
+    def test_weekend_digest_survives_blitzhealth_sys_exit(self):
+        fake_module = types.ModuleType("blitzhealth")
+
+        def fake_main():
+            raise SystemExit(1)
+
+        fake_module.main = fake_main
+
+        with patch.dict(sys.modules, {"blitzhealth": fake_module}), \
+             patch.object(bot, "send_telegram_message") as send:
+            # No debe propagar: un sys.exit de blitzhealth tumbaría el bot.
+            self.assertFalse(bot.run_weekend_digest())
+
+        send.assert_not_called()
 
     def test_help_lists_every_menu_command(self):
         with patch.object(bot, "send_telegram_message") as send:
