@@ -1207,6 +1207,17 @@ class BlitzBriefTests(unittest.TestCase):
 
         send.assert_not_called()
 
+    def test_status_shows_todays_scheduled_blocks(self):
+        with patch.object(bot, "datetime", FakeDateTime), \
+             patch.object(bot, "load_sent_runs",
+                          return_value={"2026-06-02:morning": True}), \
+             patch.object(bot, "send_telegram_message") as send:
+            bot._handle_command("/status", 1)
+
+        status = send.call_args[0][0]
+        self.assertIn("✅ Briefing de la mañana: enviado", status)
+        self.assertIn("⏳ Artículos de la tarde: pendiente", status)
+
     def test_help_lists_every_menu_command(self):
         with patch.object(bot, "send_telegram_message") as send:
             bot._handle_command("/help", 1)

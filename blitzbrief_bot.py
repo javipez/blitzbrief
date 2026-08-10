@@ -3052,6 +3052,22 @@ def register_bot_commands() -> bool:
         return False
 
 
+def _today_digest_status_lines() -> list[str]:
+    """Líneas de /status con los bloques programados de hoy y si ya salieron."""
+    now = datetime.now(ZoneInfo("Europe/Madrid"))
+    sent_runs = load_sent_runs()
+
+    lines = [f"📅 *Hoy, {_escape_md(now.strftime('%d/%m/%Y'))}*"]
+    for mode, label in (("morning", "Briefing de la mañana"),
+                        ("evening", "Artículos de la tarde")):
+        done = bool(sent_runs.get(digest_run_key(mode, now)))
+        icon = "✅" if done else "⏳"
+        state = "enviado" if done else "pendiente"
+        lines.append(f"  {icon} {_escape_md(label)}: {state}")
+
+    return lines
+
+
 def run_weekend_digest() -> bool:
     """Lanza el Blitz Weekend (blitzhealth.py) desde el bot interactivo."""
     # Import perezoso: blitzhealth solo hace falta para este comando y así
@@ -3229,6 +3245,8 @@ def _handle_command(text: str, chat_id: int) -> None:
 
     elif cmd == "/status":
         lines = ["🔎 *BlitzBrief — Estado*", ""]
+        lines.extend(_today_digest_status_lines())
+        lines.append("")
         lines.append(f"*El País* \\({_escape_md(str(len(ELPAIS_AUTHORS)))} autores\\)")
         for name in ELPAIS_AUTHORS:
             lines.append(f"  • {_escape_md(name)}")
