@@ -3509,7 +3509,7 @@ def main():
     elif "--preview-briefing" in sys.argv:
         preview_news_briefing()
     else:
-        run_digest(mode="full")
+        run_digest(notify_empty=True, mode="full")
 
 
 if __name__ == "__main__":
