@@ -35,7 +35,7 @@ import unicodedata
 import xml.etree.ElementTree as ET
 from html import escape as html_escape
 from urllib.parse import quote, urlparse
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from email.utils import parsedate_to_datetime
 from pathlib import Path
 from typing import Callable, Optional
@@ -416,14 +416,20 @@ COMPETITION_TV_SPAIN: dict[str, str] = {
 }
 
 # ── Entrenos del box de CrossFit (Box Olimpo) ─────────────────────
-# El blog publica los entrenos de la SIGUIENTE semana (normalmente
-# viernes o domingo) en una URL con el rango de fechas lunes-domingo,
-# p. ej. /entrenamientos-06-07-2026-al-12-07-2026. Como la URL es
-# predecible, construimos la de la próxima semana y comprobamos si ya
-# existe (200 = publicados, 404 = aún no). Deja la plantilla vacía para
-# desactivar el aviso.
+# El blog publica los entrenos de una semana en un post cuyo slug lleva
+# el rango lunes-domingo, p. ej. /entrenamientos-06-07-2026-al-12-07-2026.
+# El cuándo es irregular: lo normal es el domingo por la tarde para la
+# semana siguiente, pero a veces publican ya empezada la semana y otras
+# se saltan una entera. Por eso NO adivinamos la URL de una semana
+# concreta: preguntamos al blog (WordPress) cuál es el último post de
+# entrenos. Si su API no responde, caemos al sondeo de URLs.
+# Deja la plantilla vacía para desactivar el aviso.
 BOX_WORKOUTS_URL_TEMPLATE = (
     "https://boxolimpo.com/entrenamientos-{start}-al-{end}"
+)
+BOX_WORKOUTS_API_URL = "https://boxolimpo.com/wp-json/wp/v2/posts"
+BOX_WORKOUTS_SLUG_RE = re.compile(
+    r"entrenamientos-(\d{2})-(\d{2})-(\d{4})-al-(\d{2})-(\d{2})-(\d{4})"
 )
 BOX_WORKOUTS_LABEL = "Box Olimpo"
 
@@ -2161,73 +2167,183 @@ def fetch_bitcoin_block() -> str:
 # ── Entrenos del box (aviso + enlace cuando se publican) ──────────
 
 
-def _upcoming_box_week(
-    now: Optional[datetime] = None,
-) -> tuple[str, object, object]:
-    """Devuelve (url, lunes, domingo) de la SIGUIENTE semana de entrenos.
-
-    Los entrenos se publican para la semana que empieza el próximo lunes,
-    así que apuntamos siempre a ese rango. Al pasar a esa semana, la
-    función avanza sola al siguiente bloque.
-    """
+def _box_today(now: Optional[datetime] = None) -> date:
+    """Fecha de hoy en Madrid (el blog publica en horario español)."""
     tz = ZoneInfo("Europe/Madrid")
     reference = now or datetime.now(tz)
-    today = reference.astimezone(tz).date()
-    this_monday = today - timedelta(days=today.weekday())
-    next_monday = this_monday + timedelta(days=7)
-    next_sunday = next_monday + timedelta(days=6)
-    url = BOX_WORKOUTS_URL_TEMPLATE.format(
-        start=next_monday.strftime("%d-%m-%Y"),
-        end=next_sunday.strftime("%d-%m-%Y"),
+    return reference.astimezone(tz).date()
+
+
+def _parse_box_week_slug(slug: str) -> Optional[tuple[date, date]]:
+    """Extrae (lunes, domingo) del slug de un post de entrenos."""
+    match = BOX_WORKOUTS_SLUG_RE.search(slug)
+    if not match:
+        return None
+    d1, m1, y1, d2, m2, y2 = (int(g) for g in match.groups())
+    try:
+        return date(y1, m1, d1), date(y2, m2, d2)
+    except ValueError:
+        return None
+
+
+def _box_week_url(monday: date) -> str:
+    """URL del post de entrenos de la semana que empieza ese lunes."""
+    sunday = monday + timedelta(days=6)
+    return BOX_WORKOUTS_URL_TEMPLATE.format(
+        start=monday.strftime("%d-%m-%Y"),
+        end=sunday.strftime("%d-%m-%Y"),
     )
-    return url, next_monday, next_sunday
+
+
+def _upcoming_box_week(
+    now: Optional[datetime] = None,
+) -> tuple[str, date, date]:
+    """Devuelve (url, lunes, domingo) de la SIGUIENTE semana de entrenos."""
+    today = _box_today(now)
+    next_monday = today - timedelta(days=today.weekday()) + timedelta(days=7)
+    return _box_week_url(next_monday), next_monday, next_monday + timedelta(days=6)
+
+
+def _fetch_box_workouts_from_api(
+    now: Optional[datetime] = None,
+) -> Optional[dict]:
+    """Último post de entrenos según la API de WordPress del blog.
+
+    Devuelve {url, start, end} del post más reciente cuyo slug tenga el
+    formato de rango semanal, o None si la API falla o no hay ninguno.
+    """
+    try:
+        resp = requests.get(
+            BOX_WORKOUTS_API_URL,
+            params={"per_page": 10, "_fields": "slug,link,date"},
+            headers={"User-Agent": USER_AGENT},
+            timeout=15,
+        )
+        resp.raise_for_status()
+        posts = resp.json()
+    except (requests.RequestException, ValueError) as e:
+        log.warning(f"[{BOX_WORKOUTS_LABEL}] Error al consultar la API: {e}")
+        return None
+
+    if not isinstance(posts, list):
+        log.warning(f"[{BOX_WORKOUTS_LABEL}] Respuesta inesperada de la API.")
+        return None
+
+    # WordPress los devuelve del más reciente al más antiguo.
+    for post in posts:
+        if not isinstance(post, dict):
+            continue
+        week = _parse_box_week_slug(post.get("slug") or "")
+        if not week:
+            continue
+        start, end = week
+        return {
+            "url": post.get("link") or _box_week_url(start),
+            "start": start,
+            "end": end,
+        }
+
+    log.info(f"[{BOX_WORKOUTS_LABEL}] La API no devolvió ningún post de entrenos.")
+    return None
+
+
+def _fetch_box_workouts_by_url(
+    now: Optional[datetime] = None,
+) -> Optional[dict]:
+    """Plan B: sondea las URLs de la próxima semana y de la semana en curso.
+
+    Un 404 es el estado normal cuando aún no han publicado, así que no se
+    trata como error. Se mira primero la semana siguiente para quedarnos
+    con el post más nuevo si están los dos.
+    """
+    today = _box_today(now)
+    this_monday = today - timedelta(days=today.weekday())
+    for monday in (this_monday + timedelta(days=7), this_monday):
+        url = _box_week_url(monday)
+        try:
+            resp = requests.get(url, headers={"User-Agent": USER_AGENT}, timeout=15)
+        except requests.RequestException as e:
+            log.warning(f"[{BOX_WORKOUTS_LABEL}] Error al comprobar entrenos: {e}")
+            return None
+        if resp.ok:
+            return {"url": url, "start": monday, "end": monday + timedelta(days=6)}
+        if resp.status_code != 404:
+            log.warning(
+                f"[{BOX_WORKOUTS_LABEL}] Respuesta inesperada "
+                f"({resp.status_code}) al comprobar entrenos."
+            )
+    return None
+
+
+def fetch_latest_box_workouts(
+    now: Optional[datetime] = None,
+) -> Optional[dict]:
+    """Últimos entrenos publicados en el blog, sean de la semana que sean.
+
+    Devuelve {url, start, end} o None si no se pudo averiguar. Es la base
+    tanto del aviso automático como del comando /entrenos.
+    """
+    if not BOX_WORKOUTS_URL_TEMPLATE:
+        return None
+    return _fetch_box_workouts_from_api(now) or _fetch_box_workouts_by_url(now)
 
 
 def fetch_box_workouts_notice(
     now: Optional[datetime] = None,
 ) -> Optional[dict]:
-    """Comprueba si ya están los entrenos de la próxima semana.
+    """Entrenos publicados que todavía sirven, para avisar en el digest.
 
-    Devuelve un dict {url, start, end} si la página existe (200), o None
-    si aún no se han publicado (404) o si la plantilla está desactivada.
-    Un 404 es el estado normal la mayor parte de la semana, así que no se
-    trata como error.
+    Devuelve {url, start, end} si el último post cubre la semana en curso
+    o una posterior. Si el más reciente es de una semana ya terminada,
+    devuelve None: no hay nada nuevo que avisar.
     """
-    if not BOX_WORKOUTS_URL_TEMPLATE:
+    latest = fetch_latest_box_workouts(now)
+    if not latest:
         return None
 
-    url, start, end = _upcoming_box_week(now)
-    try:
-        resp = requests.get(url, headers={"User-Agent": USER_AGENT}, timeout=15)
-    except requests.RequestException as e:
-        log.warning(f"[{BOX_WORKOUTS_LABEL}] Error al comprobar entrenos: {e}")
-        return None
-
-    if resp.status_code == 404:
+    if latest["end"] < _box_today(now):
         log.info(
-            f"[{BOX_WORKOUTS_LABEL}] Entrenos "
-            f"{start.strftime('%d/%m')}–{end.strftime('%d/%m')} aún no publicados."
-        )
-        return None
-    if not resp.ok:
-        log.warning(
-            f"[{BOX_WORKOUTS_LABEL}] Respuesta inesperada "
-            f"({resp.status_code}) al comprobar entrenos."
+            f"[{BOX_WORKOUTS_LABEL}] Los últimos entrenos "
+            f"({latest['start'].strftime('%d/%m')}–"
+            f"{latest['end'].strftime('%d/%m')}) son de una semana pasada."
         )
         return None
 
-    return {"url": url, "start": start, "end": end}
+    return latest
+
+
+def _format_box_workouts_message(
+    notice: dict, now: Optional[datetime] = None
+) -> str:
+    """Texto con el rango de la semana y el enlace a los entrenos."""
+    start = notice["start"].strftime("%d/%m")
+    end = notice["end"].strftime("%d/%m")
+    lines = [f"🏋️ Entrenos {BOX_WORKOUTS_LABEL} — semana {start} al {end}"]
+    if notice["end"] < _box_today(now):
+        lines.append("(los de esta semana aún no están; estos son los últimos)")
+    lines.append(notice["url"])
+    return "\n".join(lines)
 
 
 def send_box_workouts_notice(notice: dict) -> bool:
     """Envía un aviso corto con el enlace a los entrenos de la semana."""
-    start = notice["start"].strftime("%d/%m")
-    end = notice["end"].strftime("%d/%m")
-    message = (
-        f"🏋️ Entrenos {BOX_WORKOUTS_LABEL} — semana {start} al {end} ya publicados\n"
-        f"{notice['url']}"
-    )
-    return _send_plain_message(message)
+    return _send_plain_message(_format_box_workouts_message(notice))
+
+
+def send_box_workouts_reply() -> bool:
+    """Responde a /entrenos con los últimos entrenos publicados.
+
+    A diferencia del aviso automático, aquí sí contestamos aunque el
+    último post sea de una semana ya pasada: el mensaje lo advierte. No
+    toca el registro de vistos, para no consumir el aviso del digest.
+    """
+    latest = fetch_latest_box_workouts()
+    if not latest:
+        return _send_plain_message(
+            f"🏋️ No he podido consultar los entrenos de {BOX_WORKOUTS_LABEL}. "
+            "Puede que aún no hayan publicado ninguno."
+        )
+    return _send_plain_message(_format_box_workouts_message(latest))
 
 
 def generate_news_briefing(headlines: list[dict]) -> Optional[str]:
@@ -2950,7 +3066,8 @@ def run_digest(notify_empty: bool = False, mode: str = "morning") -> None:
     else:
         log.info("No hay artículos nuevos.")
         if notify_empty:
-            delivery_success = send_articles_digest([]) or delivery_success
+            articles_delivered = send_articles_digest([])
+            delivery_success = articles_delivered or delivery_success
 
     # ── Enviar audios de podcast ─────────────────────────────────────
     for seg in podcast_segments:
@@ -3009,7 +3126,12 @@ def run_digest(notify_empty: bool = False, mode: str = "morning") -> None:
         if mode == "morning":
             primary_delivered = briefing_sent if GEMINI_API_KEY else True
         else:  # "evening"
-            primary_delivered = articles_delivered if all_new_articles else True
+            # Con notify_empty el "no hay nada hoy" también es contenido
+            # principal: si no llega, el bloque no se marca y se reintenta.
+            if all_new_articles or notify_empty:
+                primary_delivered = articles_delivered
+            else:
+                primary_delivered = True
 
         if primary_delivered:
             sent_runs[run_key] = True
@@ -3035,6 +3157,7 @@ BOT_COMMANDS: list[tuple[str, str]] = [
     ("update", "Consultar artículos nuevos ahora"),
     ("briefing", "Briefing de noticias con IA"),
     ("weekend", "Blitz Weekend: el resumen semanal"),
+    ("entrenos", "Entrenos del box de esta semana"),
     ("random", "Artículo aleatorio de un autor"),
     ("status", "Ver autores y fuentes configurados"),
     ("add", "Añadir un autor a seguir"),
@@ -3274,6 +3397,9 @@ def _handle_command(text: str, chat_id: int) -> None:
         )
         run_weekend_digest()
 
+    elif cmd == "/entrenos":
+        send_box_workouts_reply()
+
     elif cmd == "/status":
         lines = ["🔎 *BlitzBrief — Estado*", ""]
         lines.extend(_today_digest_status_lines())
@@ -3377,7 +3503,7 @@ def main():
     elif "--register-commands" in sys.argv:
         register_bot_commands()
     elif "--evening" in sys.argv:
-        run_digest(mode="evening")
+        run_digest(notify_empty=True, mode="evening")
     elif "--morning" in sys.argv:
         run_digest(mode="morning")
     elif "--preview-briefing" in sys.argv:

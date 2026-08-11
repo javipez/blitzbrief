@@ -447,10 +447,52 @@ class BlitzBriefTests(unittest.TestCase):
              patch.object(bot, "load_seen_articles", return_value=[]), \
              patch.object(bot, "fetch_tomorrow_weather_block", return_value=""), \
              patch.object(bot, "fetch_bitcoin_block", return_value=""), \
-             patch.object(bot, "fetch_box_workouts_notice", return_value=None):
-            bot.run_digest(mode="evening")
+             patch.object(bot, "fetch_box_workouts_notice", return_value=None), \
+             patch.object(bot, "send_articles_digest", return_value=True):
+            bot.run_digest(notify_empty=True, mode="evening")
 
         self.assertEqual(save_calls, [{bot.digest_run_key("evening"): True}])
+
+    def test_evening_digest_avisa_cuando_ningun_autor_ha_publicado(self):
+        sent = []
+
+        with patch.dict(bot.ELPAIS_AUTHORS, {}, clear=True), \
+             patch.dict(bot.ELPLURAL_AUTHORS, {}, clear=True), \
+             patch.dict(bot.RSS_AUTHORS, {}, clear=True), \
+             patch.dict(bot.PODCAST_SOURCES, {}, clear=True), \
+             patch.object(bot, "load_sent_runs", return_value={}), \
+             patch.object(bot, "save_sent_runs"), \
+             patch.object(bot, "load_seen_articles", return_value=[]), \
+             patch.object(bot, "fetch_tomorrow_weather_block", return_value=""), \
+             patch.object(bot, "fetch_bitcoin_block", return_value=""), \
+             patch.object(bot, "fetch_box_workouts_notice", return_value=None), \
+             patch.object(bot, "send_articles_digest",
+                          side_effect=lambda arts: sent.append(arts) or True):
+            bot.run_digest(notify_empty=True, mode="evening")
+
+        self.assertEqual(sent, [[]])
+        self.assertIn(
+            "no hay artículos nuevos de tus autores",
+            bot.format_telegram_message([]),
+        )
+
+    def test_evening_digest_no_marcado_si_falla_el_aviso_de_vacio(self):
+        save_calls = []
+
+        with patch.dict(bot.ELPAIS_AUTHORS, {}, clear=True), \
+             patch.dict(bot.ELPLURAL_AUTHORS, {}, clear=True), \
+             patch.dict(bot.RSS_AUTHORS, {}, clear=True), \
+             patch.dict(bot.PODCAST_SOURCES, {}, clear=True), \
+             patch.object(bot, "load_sent_runs", return_value={}), \
+             patch.object(bot, "save_sent_runs", side_effect=lambda runs: save_calls.append(dict(runs))), \
+             patch.object(bot, "load_seen_articles", return_value=[]), \
+             patch.object(bot, "fetch_tomorrow_weather_block", return_value=""), \
+             patch.object(bot, "fetch_bitcoin_block", return_value=""), \
+             patch.object(bot, "fetch_box_workouts_notice", return_value=None), \
+             patch.object(bot, "send_articles_digest", return_value=False):
+            bot.run_digest(notify_empty=True, mode="evening")
+
+        self.assertEqual(save_calls, [])
 
     def test_empty_digest_header_uses_madrid_timezone(self):
         with patch.object(bot, "datetime", FakeDateTime):
@@ -1082,34 +1124,148 @@ class BlitzBriefTests(unittest.TestCase):
         self.assertEqual(start_mon, date(2026, 7, 20))
         self.assertEqual(end_mon, date(2026, 7, 26))
 
-    def test_fetch_box_workouts_notice_none_when_not_published(self):
-        class FakeResp:
-            status_code = 404
-            ok = False
+    def test_parse_box_week_slug_reads_range_and_rejects_otros_posts(self):
+        self.assertEqual(
+            bot._parse_box_week_slug("entrenamientos-13-07-2026-al-19-07-2026"),
+            (date(2026, 7, 13), date(2026, 7, 19)),
+        )
+        self.assertIsNone(bot._parse_box_week_slug("horario-de-verano"))
+        self.assertIsNone(
+            bot._parse_box_week_slug("entrenamientos-32-07-2026-al-19-07-2026")
+        )
 
-        with patch.object(bot.requests, "get", return_value=FakeResp()):
-            notice = bot.fetch_box_workouts_notice(
-                datetime(2026, 7, 8, 9, 0, tzinfo=ZoneInfo("Europe/Madrid"))
-            )
-
-        self.assertIsNone(notice)
-
-    def test_fetch_box_workouts_notice_returns_dict_when_published(self):
+    def _fake_box_api(self, slugs):
+        """Devuelve un fake de requests.get que responde como la API del blog."""
         class FakeResp:
             status_code = 200
             ok = True
 
-        with patch.object(bot.requests, "get", return_value=FakeResp()):
+            def raise_for_status(self):
+                pass
+
+            def json(self):
+                return [
+                    {"slug": s, "link": f"https://boxolimpo.com/{s}"} for s in slugs
+                ]
+
+        def fake_get(url, **kwargs):
+            if "wp-json" in url:
+                return FakeResp()
+            raise AssertionError(f"No debería sondear URLs: {url}")
+
+        return fake_get
+
+    def test_fetch_box_workouts_uses_latest_post_from_api(self):
+        fake_get = self._fake_box_api([
+            "cambio-de-horario-en-agosto",
+            "entrenamientos-13-07-2026-al-19-07-2026",
+            "entrenamientos-06-07-2026-al-12-07-2026",
+        ])
+
+        with patch.object(bot.requests, "get", side_effect=fake_get):
+            latest = bot.fetch_latest_box_workouts(
+                datetime(2026, 7, 15, 9, 0, tzinfo=ZoneInfo("Europe/Madrid"))
+            )
+
+        self.assertEqual(latest["start"], date(2026, 7, 13))
+        self.assertEqual(
+            latest["url"],
+            "https://boxolimpo.com/entrenamientos-13-07-2026-al-19-07-2026",
+        )
+
+    def test_box_notice_catches_week_published_once_already_started(self):
+        """El box publica a veces con la semana empezada (miércoles).
+
+        La versión anterior solo miraba la semana SIGUIENTE, así que este
+        caso no llegaba a avisar nunca.
+        """
+        fake_get = self._fake_box_api(["entrenamientos-13-07-2026-al-19-07-2026"])
+
+        with patch.object(bot.requests, "get", side_effect=fake_get):
             notice = bot.fetch_box_workouts_notice(
-                datetime(2026, 7, 8, 9, 0, tzinfo=ZoneInfo("Europe/Madrid"))
+                datetime(2026, 7, 15, 20, 0, tzinfo=ZoneInfo("Europe/Madrid"))
             )
 
         self.assertIsNotNone(notice)
-        self.assertEqual(
-            notice["url"],
-            "https://boxolimpo.com/entrenamientos-13-07-2026-al-19-07-2026",
-        )
         self.assertEqual(notice["start"], date(2026, 7, 13))
+
+    def test_box_notice_still_catches_next_week_published_on_sunday(self):
+        fake_get = self._fake_box_api(["entrenamientos-20-07-2026-al-26-07-2026"])
+
+        with patch.object(bot.requests, "get", side_effect=fake_get):
+            notice = bot.fetch_box_workouts_notice(
+                datetime(2026, 7, 19, 21, 30, tzinfo=ZoneInfo("Europe/Madrid"))
+            )
+
+        self.assertIsNotNone(notice)
+        self.assertEqual(notice["start"], date(2026, 7, 20))
+
+    def test_box_notice_none_when_latest_week_already_ended(self):
+        fake_get = self._fake_box_api(["entrenamientos-06-07-2026-al-12-07-2026"])
+
+        with patch.object(bot.requests, "get", side_effect=fake_get):
+            notice = bot.fetch_box_workouts_notice(
+                datetime(2026, 7, 15, 9, 0, tzinfo=ZoneInfo("Europe/Madrid"))
+            )
+
+        self.assertIsNone(notice)
+
+    def test_box_falls_back_to_url_probe_when_api_fails(self):
+        probed = []
+
+        class FakeResp:
+            def __init__(self, status):
+                self.status_code = status
+                self.ok = status == 200
+
+        def fake_get(url, **kwargs):
+            if "wp-json" in url:
+                raise bot.requests.RequestException("API caída")
+            probed.append(url)
+            # La semana siguiente aún no está; la actual sí.
+            published = "entrenamientos-13-07-2026-al-19-07-2026"
+            return FakeResp(200 if published in url else 404)
+
+        with patch.object(bot.requests, "get", side_effect=fake_get):
+            notice = bot.fetch_box_workouts_notice(
+                datetime(2026, 7, 15, 9, 0, tzinfo=ZoneInfo("Europe/Madrid"))
+            )
+
+        self.assertIsNotNone(notice)
+        self.assertEqual(notice["start"], date(2026, 7, 13))
+        self.assertEqual(len(probed), 2)  # próxima semana y semana en curso
+
+    def test_entrenos_command_replies_with_latest_link(self):
+        latest = {
+            "url": "https://boxolimpo.com/entrenamientos-13-07-2026-al-19-07-2026",
+            "start": date(2026, 7, 13),
+            "end": date(2026, 7, 19),
+        }
+
+        with patch.object(bot, "fetch_latest_box_workouts", return_value=latest), \
+             patch.object(bot, "_send_plain_message", return_value=True) as send:
+            bot._handle_command("/entrenos", 1)
+
+        message = send.call_args[0][0]
+        self.assertIn(latest["url"], message)
+        self.assertIn("13/07", message)
+
+    def test_entrenos_command_warns_when_week_is_stale(self):
+        # FakeDateTime fija "hoy" al 2 de junio de 2026.
+        stale = {
+            "url": "https://boxolimpo.com/entrenamientos-25-05-2026-al-31-05-2026",
+            "start": date(2026, 5, 25),
+            "end": date(2026, 5, 31),
+        }
+
+        with patch.object(bot, "datetime", FakeDateTime), \
+             patch.object(bot, "fetch_latest_box_workouts", return_value=stale), \
+             patch.object(bot, "_send_plain_message", return_value=True) as send:
+            bot._handle_command("/entrenos", 1)
+
+        message = send.call_args[0][0]
+        self.assertIn(stale["url"], message)
+        self.assertIn("aún no están", message)
 
     def test_box_workouts_notice_sent_once_and_marked_seen(self):
         notice = {

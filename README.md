@@ -9,7 +9,7 @@ Bot de Telegram que cada mañana te envía un **briefing de noticias generado co
 - **Digest de columnistas** — Consulta las páginas de autor de El País, El Plural y feeds RSS para detectar artículos nuevos
 - **Blitz Weekend** — Cada domingo prepara un resumen semanal con salud/longevidad, columnas, lecturas largas y contexto
 - **Podcasts** — Detecta segmentos de podcast por título y te envía el audio directamente en Telegram
-- **Entrenos del box** — Avisa (con enlace) cuando el box de CrossFit publica los entrenos de la próxima semana
+- **Entrenos del box** — Avisa (con enlace) cuando el box de CrossFit publica los entrenos de la semana, y los sirve on-demand con `/entrenos`
 - **Alertas de errores** — Te avisa si alguna fuente falla
 
 ## Fuentes del briefing
@@ -29,6 +29,7 @@ Bot de Telegram que cada mañana te envía un **briefing de noticias generado co
 | `/update` | Forzar un digest de columnas ahora |
 | `/briefing` | Briefing de noticias con IA on-demand |
 | `/weekend` | Lanzar el Blitz Weekend (digest semanal) ahora |
+| `/entrenos` | Enlace a los últimos entrenos publicados por el box |
 | `/random` | Artículo aleatorio de un autor al azar |
 | `/random Jabois` | Artículo aleatorio de un autor concreto |
 | `/status` | Estado de los digests de hoy y autores configurados |
@@ -101,6 +102,7 @@ authors.json             # Autores configurados (editable desde Telegram)
 - El briefing usa **Gemini 3 Flash** (tier gratuito de Google AI Studio)
 - El digest dominical se ejecuta con `blitzhealth.py` y se envía como **Blitz Weekend** por Telegram
 - `.blitzbrief_seen_articles.json` evita enviar duplicados (también el aviso de entrenos, que llega una sola vez por semana)
-- El aviso de entrenos construye la URL de la próxima semana (`entrenamientos-DD-MM-YYYY-al-DD-MM-YYYY`) y comprueba si ya existe; se configura en `BOX_WORKOUTS_URL_TEMPLATE` (déjalo vacío para desactivarlo)
+- El aviso de entrenos pregunta a la API de WordPress del blog (`wp-json`) cuál es el último post `entrenamientos-DD-MM-YYYY-al-DD-MM-YYYY`; si esa API falla, sondea las URLs de la semana en curso y la siguiente. Solo avisa si la semana no ha terminado. Se desactiva dejando vacío `BOX_WORKOUTS_URL_TEMPLATE`
+- El digest de la tarde avisa también cuando ningún autor ha publicado ("Hoy no hay artículos nuevos de tus autores"), para que el silencio no se confunda con un fallo del bot
 - Si algún medio cambia su web, el parser puede necesitar ajustes (scraping HTML, no API oficial)
 - El script es respetuoso con los servidores: una petición por autor, sin concurrencia agresiva
