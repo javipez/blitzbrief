@@ -1235,7 +1235,7 @@ class BlitzBriefTests(unittest.TestCase):
         self.assertEqual(notice["start"], date(2026, 7, 13))
         self.assertEqual(len(probed), 2)  # próxima semana y semana en curso
 
-    def test_entrenos_command_replies_with_latest_link(self):
+    def test_box_command_replies_with_latest_link(self):
         latest = {
             "url": "https://boxolimpo.com/entrenamientos-13-07-2026-al-19-07-2026",
             "start": date(2026, 7, 13),
@@ -1244,13 +1244,13 @@ class BlitzBriefTests(unittest.TestCase):
 
         with patch.object(bot, "fetch_latest_box_workouts", return_value=latest), \
              patch.object(bot, "_send_plain_message", return_value=True) as send:
-            bot._handle_command("/entrenos", 1)
+            bot._handle_command("/box", 1)
 
         message = send.call_args[0][0]
         self.assertIn(latest["url"], message)
         self.assertIn("13/07", message)
 
-    def test_entrenos_command_warns_when_week_is_stale(self):
+    def test_box_command_warns_when_week_is_stale(self):
         # FakeDateTime fija "hoy" al 2 de junio de 2026.
         stale = {
             "url": "https://boxolimpo.com/entrenamientos-25-05-2026-al-31-05-2026",
@@ -1261,7 +1261,7 @@ class BlitzBriefTests(unittest.TestCase):
         with patch.object(bot, "datetime", FakeDateTime), \
              patch.object(bot, "fetch_latest_box_workouts", return_value=stale), \
              patch.object(bot, "_send_plain_message", return_value=True) as send:
-            bot._handle_command("/entrenos", 1)
+            bot._handle_command("/box", 1)
 
         message = send.call_args[0][0]
         self.assertIn(stale["url"], message)

@@ -9,7 +9,7 @@ Bot de Telegram que cada mañana te envía un **briefing de noticias generado co
 - **Digest de columnistas** — Consulta las páginas de autor de El País, El Plural y feeds RSS para detectar artículos nuevos
 - **Blitz Weekend** — Cada domingo prepara un resumen semanal con salud/longevidad, columnas, lecturas largas y contexto
 - **Podcasts** — Detecta segmentos de podcast por título y te envía el audio directamente en Telegram
-- **Entrenos del box** — Avisa (con enlace) cuando el box de CrossFit publica los entrenos de la semana, y los sirve on-demand con `/entrenos`
+- **Entrenos del box** — Avisa (con enlace) cuando el box de CrossFit publica los entrenos de la semana, y los sirve on-demand con `/box`
 - **Alertas de errores** — Te avisa si alguna fuente falla
 
 ## Fuentes del briefing
@@ -29,7 +29,7 @@ Bot de Telegram que cada mañana te envía un **briefing de noticias generado co
 | `/update` | Forzar un digest de columnas ahora |
 | `/briefing` | Briefing de noticias con IA on-demand |
 | `/weekend` | Lanzar el Blitz Weekend (digest semanal) ahora |
-| `/entrenos` | Enlace a los últimos entrenos publicados por el box |
+| `/box` | Enlace a los últimos entrenos publicados por el box |
 | `/random` | Artículo aleatorio de un autor al azar |
 | `/random Jabois` | Artículo aleatorio de un autor concreto |
 | `/status` | Estado de los digests de hoy y autores configurados |

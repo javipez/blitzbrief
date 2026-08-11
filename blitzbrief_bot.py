@@ -2281,7 +2281,7 @@ def fetch_latest_box_workouts(
     """Últimos entrenos publicados en el blog, sean de la semana que sean.
 
     Devuelve {url, start, end} o None si no se pudo averiguar. Es la base
-    tanto del aviso automático como del comando /entrenos.
+    tanto del aviso automático como del comando /box.
     """
     if not BOX_WORKOUTS_URL_TEMPLATE:
         return None
@@ -2331,7 +2331,7 @@ def send_box_workouts_notice(notice: dict) -> bool:
 
 
 def send_box_workouts_reply() -> bool:
-    """Responde a /entrenos con los últimos entrenos publicados.
+    """Responde a /box con los últimos entrenos publicados.
 
     A diferencia del aviso automático, aquí sí contestamos aunque el
     último post sea de una semana ya pasada: el mensaje lo advierte. No
@@ -3157,7 +3157,7 @@ BOT_COMMANDS: list[tuple[str, str]] = [
     ("update", "Consultar artículos nuevos ahora"),
     ("briefing", "Briefing de noticias con IA"),
     ("weekend", "Blitz Weekend: el resumen semanal"),
-    ("entrenos", "Entrenos del box de esta semana"),
+    ("box", "Entrenos del box de esta semana"),
     ("random", "Artículo aleatorio de un autor"),
     ("status", "Ver autores y fuentes configurados"),
     ("add", "Añadir un autor a seguir"),
@@ -3397,7 +3397,7 @@ def _handle_command(text: str, chat_id: int) -> None:
         )
         run_weekend_digest()
 
-    elif cmd == "/entrenos":
+    elif cmd == "/box":
         send_box_workouts_reply()
 
     elif cmd == "/status":
