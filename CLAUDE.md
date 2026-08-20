@@ -44,3 +44,6 @@ Variables de entorno necesarias en local: `TELEGRAM_BOT_TOKEN`,
 (Cuando el usuario señale un error repetido en este repo, añadir aquí una
 regla de una línea que lo evite. No añadir nada sin que lo pida. Máximo 10
 líneas: si se llena, proponer cuál borrar.)
+- Comandos del VPS: la ruta del repo es `/home/javi/apps/blitzbrief` (no el
+  home). Nunca inventar rutas ni nombres de servicio: consultar la memoria
+  del proyecto antes de dar un comando para el VPS.
