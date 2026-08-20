@@ -430,14 +430,13 @@ for _sports_source in SPORTS_SOURCES:
     )
 
 # Ligas ESPN a consultar para fútbol
-# Días de antelación con los que se anuncian los partidos. Antes solo se
-# consultaba el día en curso, así que la sección salía únicamente las
-# jornadas de partido: como recordatorio no servía de mucho.
-FIXTURES_LOOKAHEAD_DAYS = 6
+# Días de antelación con los que se anuncian los partidos: hoy y mañana.
+# Con ventanas más largas el mismo partido se repetía cada mañana hasta
+# jugarse, que cansa más de lo que avisa.
+FIXTURES_LOOKAHEAD_DAYS = 1
 
 ESPN_FOOTBALL_LEAGUES: list[str] = [
     "esp.1",            # La Liga
-    "esp.2",            # Segunda División
     "uefa.champions",   # Champions League
     "uefa.europa",      # Europa League
     "esp.copa_del_rey", # Copa del Rey
