@@ -97,10 +97,12 @@ NEWS_SOURCES: dict[str, str] = {
     "Marca": "https://e00-marca.uecdn.es/rss/portada.xml",
     "Diario AS": "https://feeds.as.com/mrss-s/pages/as/site/as.com/portada",
     "El Confidencial": "https://rss.elconfidencial.com/",
-    "OpenAI Blog": "https://openai.com/blog/rss.xml",
-    "Google Developers Blog": "https://developers.googleblog.com/feeds/posts/default",
-    "Google Gemini Blog": "https://blog.google/products-and-platforms/products/gemini/rss/",
+    "TechCrunch IA": "https://techcrunch.com/category/artificial-intelligence/feed/",
+    "Hacker News": "https://hnrss.org/frontpage?points=150",
+    "Simon Willison": "https://simonwillison.net/atom/everything/",
     "9to5Mac": "https://9to5mac.com/feed/",
+    "OpenAI Blog": "https://openai.com/blog/rss.xml",
+    "Google Gemini Blog": "https://blog.google/products-and-platforms/products/gemini/rss/",
     "Anthropic News": "https://raw.githubusercontent.com/taobojlen/anthropic-rss-feed/main/anthropic_news_rss.xml",
 }
 
@@ -233,6 +235,30 @@ SOURCE_PROFILES: dict[str, dict] = {
         "type": "generalista",
         "weight": 0.95,
     },
+    "TechCrunch IA": {
+        "orientation": "tecnológico / industria IA",
+        "reliability": "media-alta",
+        "sensationalism": "medio",
+        "scope": "tecnología",
+        "type": "especializado",
+        "weight": 0.95,
+    },
+    "Hacker News": {
+        "orientation": "agregador comunitario / tecnológico",
+        "reliability": "media",
+        "sensationalism": "bajo",
+        "scope": "tecnología",
+        "type": "agregador",
+        "weight": 0.85,
+    },
+    "Simon Willison": {
+        "orientation": "blog personal / IA y desarrollo",
+        "reliability": "alta",
+        "sensationalism": "bajo",
+        "scope": "tecnología",
+        "type": "análisis",
+        "weight": 1.0,
+    },
     "OpenAI Blog": {
         "orientation": "fuente primaria / tecnológica",
         "reliability": "alta",
@@ -240,14 +266,6 @@ SOURCE_PROFILES: dict[str, dict] = {
         "scope": "tecnología",
         "type": "fuente primaria",
         "weight": 1.1,
-    },
-    "Google Developers Blog": {
-        "orientation": "fuente primaria / tecnológica",
-        "reliability": "alta",
-        "sensationalism": "bajo",
-        "scope": "tecnología",
-        "type": "fuente primaria",
-        "weight": 1.05,
     },
     "Google Gemini Blog": {
         "orientation": "fuente primaria / tecnológica",
@@ -320,6 +338,11 @@ ELPAIS_AUTHOR_FEEDS: tuple[str, ...] = (
 # Ventana temporal: artículos publicados en las últimas N horas
 LOOKBACK_HOURS = 26  # 26h para cubrir holgadamente un día completo
 MAX_ARTICLES_PER_AUTHOR = 1
+
+# Gemini solo elige UNA noticia para la sección Tech. Con las fuentes tech
+# actuales el pool traía 20 candidatos, que se comían el corte final y
+# dejaban a Deporte o Internacional sin material. Con 8 sobra de sobra.
+MAX_TECH_HEADLINES = 8
 
 # ── Bitcoin ───────────────────────────────────────────────────────
 # Variación en 24h a partir de la cual el bloque incluye una explicación.
@@ -613,6 +636,37 @@ def _ensure_aware_utc(dt: Optional[datetime]) -> Optional[datetime]:
     if dt.tzinfo is None:
         return dt.replace(tzinfo=timezone.utc)
     return dt.astimezone(timezone.utc)
+
+
+FEED_DATE_FIELDS: tuple[str, ...] = (
+    "pubDate",
+    "{http://purl.org/dc/elements/1.1/}date",
+    "{http://www.w3.org/2005/Atom}updated",
+    "{http://www.w3.org/2005/Atom}published",
+)
+
+
+def _entry_published_at(entry) -> Optional[datetime]:
+    """Fecha de publicación de una entrada RSS/Atom, o None si no la trae.
+
+    Algunos feeds (el de Google Developers Blog, sin ir más lejos) sirven
+    items sin ninguna fecha. Devolver None permite descartarlos en vez de
+    darlos por recientes para siempre.
+    """
+    for field in FEED_DATE_FIELDS:
+        raw = entry.findtext(field)
+        if not raw or not raw.strip():
+            continue
+        raw = raw.strip()
+        try:
+            if field == "pubDate":
+                return _ensure_aware_utc(parsedate_to_datetime(raw))
+            return _ensure_aware_utc(
+                datetime.fromisoformat(raw.replace("Z", "+00:00"))
+            )
+        except Exception:
+            continue
+    return None
 
 
 # Sesiones HTTP reutilizables. El País bloquea peticiones sin cookies de
@@ -933,7 +987,18 @@ def curate_news_headlines(headlines: list[dict], max_items: int = 45) -> list[di
         curated.append(enriched)
 
     curated.sort(key=lambda item: item.get("importance_score", 0), reverse=True)
-    return curated[:max_items]
+
+    # Tope de titulares tech para que no desplacen al resto de secciones
+    limited: list[dict] = []
+    tech_count = 0
+    for item in curated:
+        if _is_tech_headline(item):
+            if tech_count >= MAX_TECH_HEADLINES:
+                continue
+            tech_count += 1
+        limited.append(item)
+
+    return limited[:max_items]
 
 
 def _rss_item_matches_author(author_name: str, title: str, subtitle: str = "") -> bool:
@@ -1847,17 +1912,12 @@ def fetch_news_headlines(max_per_source: int = 7) -> list[dict]:
             desc_el = item.find("description")
             if title_el is None or not title_el.text:
                 continue
-            # Filtrar por fecha: descartar artículos de más de 24h
-            pubdate_el = item.find("pubDate")
-            pub_dt = None
-            if pubdate_el is not None and pubdate_el.text:
-                try:
-                    pub_dt = parsedate_to_datetime(pubdate_el.text)
-                    pub_dt = _ensure_aware_utc(pub_dt)
-                    if pub_dt < cutoff:
-                        continue
-                except Exception:
-                    pass
+            # Filtrar por fecha: descartar lo viejo y lo que no trae fecha.
+            # Sin fecha no hay forma de saber si es de hoy, y aceptarlo
+            # hacía que el mismo titular se repitiera cada mañana.
+            pub_dt = _entry_published_at(item)
+            if pub_dt is None or pub_dt < cutoff:
+                continue
             title = title_el.text.strip()
             desc = ""
             if desc_el is not None and desc_el.text:
@@ -1870,7 +1930,7 @@ def fetch_news_headlines(max_per_source: int = 7) -> list[dict]:
                 "title": title,
                 "description": desc,
                 "url": url,
-                "published_at": pub_dt.isoformat() if pub_dt else "",
+                "published_at": pub_dt.isoformat(),
                 "profile": _source_profile(source_name),
             })
             count += 1
@@ -1885,19 +1945,10 @@ def fetch_news_headlines(max_per_source: int = 7) -> list[dict]:
                 summary_el = entry.find("atom:summary", ns)
                 if title_el is None or not title_el.text:
                     continue
-                # Filtrar por fecha en feeds Atom
-                updated_el = entry.find("atom:updated", ns)
-                pub_dt = None
-                if updated_el is not None and updated_el.text:
-                    try:
-                        pub_dt = datetime.fromisoformat(
-                            updated_el.text.replace("Z", "+00:00")
-                        )
-                        pub_dt = _ensure_aware_utc(pub_dt)
-                        if pub_dt < cutoff:
-                            continue
-                    except Exception:
-                        pass
+                # Misma regla que en RSS: sin fecha fiable, fuera
+                pub_dt = _entry_published_at(entry)
+                if pub_dt is None or pub_dt < cutoff:
+                    continue
                 title = title_el.text.strip()
                 desc = ""
                 if summary_el is not None and summary_el.text:
@@ -1913,7 +1964,7 @@ def fetch_news_headlines(max_per_source: int = 7) -> list[dict]:
                     "title": title,
                     "description": desc,
                     "url": url,
-                    "published_at": pub_dt.isoformat() if pub_dt else "",
+                    "published_at": pub_dt.isoformat(),
                     "profile": _source_profile(source_name),
                 })
                 count += 1

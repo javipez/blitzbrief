@@ -1475,6 +1475,76 @@ class BlitzBriefTests(unittest.TestCase):
         for name, _ in bot.BOT_COMMANDS:
             self.assertIn(f"/{name} —", help_text)
 
+    def test_headlines_sin_fecha_se_descartan(self):
+        """Un feed sin <pubDate> no debe colar artículos viejos eternamente."""
+        xml = """<?xml version="1.0"?>
+        <rss><channel>
+          <item>
+            <title>Model routing with Google Cloud API Gateway</title>
+            <link>https://example.com/model-routing</link>
+            <description>Route traffic between Gemini, Claude and OpenAI.</description>
+          </item>
+        </channel></rss>
+        """
+
+        with patch.object(bot, "_fetch_page", return_value=(xml, None)), \
+             patch.dict(bot.NEWS_SOURCES, {"Feed Sin Fecha": "https://example.com/feed"},
+                        clear=True), \
+             patch.dict(bot.SPORTS_SOURCES, {}, clear=True):
+            headlines = bot.fetch_news_headlines()
+
+        self.assertEqual(headlines, [])
+
+    def test_headlines_usan_dc_date_y_atom_published(self):
+        """Si no hay pubDate, valen dc:date o las fechas Atom."""
+        reciente = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S+00:00")
+        xml = f"""<?xml version="1.0"?>
+        <rss xmlns:dc="http://purl.org/dc/elements/1.1/"><channel>
+          <item>
+            <title>Noticia con dc:date</title>
+            <link>https://example.com/a</link>
+            <dc:date>{reciente}</dc:date>
+          </item>
+        </channel></rss>
+        """
+
+        with patch.object(bot, "_fetch_page", return_value=(xml, None)), \
+             patch.dict(bot.NEWS_SOURCES, {"Feed dc": "https://example.com/feed"},
+                        clear=True), \
+             patch.dict(bot.SPORTS_SOURCES, {}, clear=True):
+            headlines = bot.fetch_news_headlines()
+
+        self.assertEqual(len(headlines), 1)
+        self.assertTrue(headlines[0]["published_at"])
+
+    def test_google_developers_blog_ya_no_es_fuente(self):
+        """El feed roto que repetía la misma noticia tech cada día."""
+        self.assertNotIn("Google Developers Blog", bot.NEWS_SOURCES)
+
+    def test_cada_fuente_tiene_perfil_editorial(self):
+        for nombre in bot.NEWS_SOURCES:
+            self.assertIn(nombre, bot.SOURCE_PROFILES, f"falta perfil de {nombre}")
+
+    def test_tech_no_acapara_el_corte_de_titulares(self):
+        """20 titulares tech no deben dejar sin hueco al resto de secciones."""
+        headlines = [
+            {"source": "TechCrunch IA", "title": f"OpenAI ships feature {i}",
+             "description": "AI news", "url": f"https://example.com/t{i}",
+             "published_at": "", "profile": bot._source_profile("TechCrunch IA")}
+            for i in range(20)
+        ] + [
+            {"source": "Marca", "title": f"El Real Madrid gana el partido {i}",
+             "description": "", "url": f"https://example.com/d{i}",
+             "published_at": "", "profile": bot._source_profile("Marca")}
+            for i in range(5)
+        ]
+
+        curated = bot.curate_news_headlines(headlines)
+        tech = [h for h in curated if bot._is_tech_headline(h)]
+
+        self.assertLessEqual(len(tech), bot.MAX_TECH_HEADLINES)
+        self.assertTrue([h for h in curated if h["source"] == "Marca"])
+
 
 if __name__ == "__main__":
     unittest.main()
