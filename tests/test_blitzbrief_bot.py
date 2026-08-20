@@ -1545,6 +1545,68 @@ class BlitzBriefTests(unittest.TestCase):
         self.assertLessEqual(len(tech), bot.MAX_TECH_HEADLINES)
         self.assertTrue([h for h in curated if h["source"] == "Marca"])
 
+    def test_baloncesto_acb_puntua_mas_que_la_nba(self):
+        """Unicaja y la Euroliga deben ganar a los titulares de la NBA."""
+        unicaja = {"source": "Marca Baloncesto",
+                   "title": "El Unicaja bate el récord de triples de la ACB",
+                   "description": "", "profile": bot._source_profile("Marca Baloncesto")}
+        euroliga = {"source": "Marca Baloncesto",
+                    "title": "El Real Madrid tiembla: Campazzo es duda en la Euroliga",
+                    "description": "", "profile": bot._source_profile("Marca Baloncesto")}
+        nba = {"source": "Marca Baloncesto",
+               "title": "La magia de Doncic no evita la derrota de los Lakers",
+               "description": "", "profile": bot._source_profile("Marca Baloncesto")}
+
+        self.assertGreater(bot._score_headline(unicaja), bot._score_headline(nba))
+        self.assertGreater(bot._score_headline(euroliga), bot._score_headline(nba))
+        self.assertIn("Unicaja", bot._matched_interests(unicaja))
+
+    def test_nba_no_activa_el_interes_de_baloncesto(self):
+        nba = {"source": "Marca Baloncesto",
+               "title": "Los Nuggets ganan sin Jokic y los Heat vuelven a latir",
+               "description": "", "profile": bot._source_profile("Marca Baloncesto")}
+        self.assertEqual(bot._matched_interests(nba), [])
+
+    def test_el_deporte_tiene_hueco_reservado_y_variado(self):
+        """46 deportivos no deben quedar reducidos a uno solo por el corte."""
+        # Generalistas variados y bien puntuados: deben llenar el corte y
+        # dejar al deporte fuera si no hubiera cuota reservada.
+        palabras = ["sanidad", "vivienda", "empleo", "justicia", "energia",
+                    "transporte", "educacion", "turismo", "industria", "banca"]
+        generalistas = [
+            {"source": "El País",
+             "title": f"El Gobierno aprueba el plan de {p} numero {i} con Sanchez",
+             "description": "inteligencia artificial OpenAI Gemini Apple Google",
+             "url": f"https://e.com/n{i}-{p}", "published_at": "",
+             "profile": bot._source_profile("El País")}
+            for i in range(6) for p in palabras
+        ]
+        titulares = {
+            "Marca Real Madrid": ["Mastantuono renueva hasta 2030",
+                                  "Konaté debuta ante el Almería",
+                                  "Vinicius vuelve tras su lesión"],
+            "Marca Málaga": ["El Málaga ficha a Gudelj para la banda",
+                             "Larrubia renueva por tres temporadas",
+                             "La Rosaleda agota entradas para el derbi"],
+            "Marca Baloncesto": ["Izan Almansa deja el Madrid rumbo a la NCAA",
+                                 "El Unicaja bate el récord de triples de la ACB",
+                                 "Campazzo es duda para la Euroliga"],
+        }
+        deportivos = [
+            {"source": fuente, "title": titulo, "description": "",
+             "url": f"https://e.com/{hash(titulo)}", "published_at": "",
+             "profile": bot._source_profile(fuente)}
+            for fuente, titulos in titulares.items() for titulo in titulos
+        ]
+
+        curated = bot.curate_news_headlines(generalistas + deportivos)
+        dep = [h for h in curated if bot._is_sports_headline(h)]
+
+        self.assertGreaterEqual(len(dep), bot.MIN_SPORTS_HEADLINES)
+        fuentes = {h["source"] for h in dep}
+        self.assertGreater(len(fuentes), 1, "el deporte debe repartirse entre fuentes")
+        self.assertIn("Marca Baloncesto", fuentes, "el baloncesto debe tener sitio")
+
 
 if __name__ == "__main__":
     unittest.main()

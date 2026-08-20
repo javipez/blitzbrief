@@ -311,6 +311,10 @@ INTEREST_KEYWORDS: dict[str, tuple[str, ...]] = {
     "Andalucía": ("andalucia", "andaluz", "sevilla", "granada", "cordoba"),
     "Real Madrid": ("real madrid", "ancelotti", "bernabeu", "vinicius", "mbappe"),
     "Málaga CF": ("malaga cf", "malaguista", "la rosaleda"),
+    # Baloncesto: palabras propias de ACB/Euroliga, nunca de la NBA, para que
+    # los feeds de Marca/AS no cuelen Lakers y Nuggets en la sección Deporte.
+    "Unicaja": ("unicaja", "unicajero", "martin carpena"),
+    "baloncesto ACB": ("acb", "liga endesa", "euroliga", "euroleague", "eurocup"),
     "IA": ("ia", "inteligencia artificial", "ai"),
     "OpenAI": ("openai", "chatgpt", "gpt"),
     "Gemini": ("gemini",),
@@ -343,6 +347,14 @@ MAX_ARTICLES_PER_AUTHOR = 1
 # actuales el pool traía 20 candidatos, que se comían el corte final y
 # dejaban a Deporte o Internacional sin material. Con 8 sobra de sobra.
 MAX_TECH_HEADLINES = 8
+
+# La otra cara del mismo problema: una fuente deportiva tope en 1,0 puntos
+# (peso 0,65 + un interés − 0,1 por sensacionalismo) y el corte suele exigir
+# más, así que el deporte solo entraba por casualidad. Se le reserva un
+# mínimo de huecos, repartidos entre fuentes para que no sean seis noticias
+# del Real Madrid de fútbol seguidas.
+MIN_SPORTS_HEADLINES = 6
+MAX_PER_SPORTS_SOURCE = 2
 
 # ── Bitcoin ───────────────────────────────────────────────────────
 # Variación en 24h a partir de la cual el bloque incluye una explicación.
@@ -899,6 +911,11 @@ def _why_headline_matters(headline: dict, source_count: int) -> str:
     return "Es una noticia relevante dentro de su sección."
 
 
+def _is_sports_headline(headline: dict) -> bool:
+    profile = headline.get("profile") or _source_profile(headline.get("source", ""))
+    return profile.get("type") == "deportivo"
+
+
 def _is_tech_headline(headline: dict) -> bool:
     profile = headline.get("profile") or _source_profile(headline.get("source", ""))
     if profile.get("scope") == "tecnología":
@@ -998,7 +1015,34 @@ def curate_news_headlines(headlines: list[dict], max_items: int = 45) -> list[di
             tech_count += 1
         limited.append(item)
 
-    return limited[:max_items]
+    # Cuota deportiva repartida en rondas: primero el mejor titular de cada
+    # fuente, luego el segundo de cada una. Así el baloncesto entra aunque el
+    # fútbol tenga más titulares y todos empaten a puntos.
+    ranked: list[tuple[int, dict]] = []
+    per_source: dict[str, int] = {}
+    for item in limited:
+        if not _is_sports_headline(item):
+            continue
+        source = item.get("source", "")
+        round_index = per_source.get(source, 0)
+        per_source[source] = round_index + 1
+        if round_index < MAX_PER_SPORTS_SOURCE:
+            ranked.append((round_index, item))
+
+    # sort estable: dentro de cada ronda se respeta el orden por puntuación
+    ranked.sort(key=lambda pair: pair[0])
+    sports_quota = [item for _, item in ranked[:MIN_SPORTS_HEADLINES]]
+
+    reserved = {id(item) for item in sports_quota}
+    selected = list(sports_quota)
+    for item in limited:
+        if len(selected) >= max_items:
+            break
+        if id(item) not in reserved:
+            selected.append(item)
+
+    selected.sort(key=lambda item: item.get("importance_score", 0), reverse=True)
+    return selected[:max_items]
 
 
 def _rss_item_matches_author(author_name: str, title: str, subtitle: str = "") -> bool:
@@ -1891,7 +1935,7 @@ def fetch_news_headlines(max_per_source: int = 7) -> list[dict]:
     all_sources = {**NEWS_SOURCES, **SPORTS_SOURCES}
 
     for source_name, feed_url in all_sources.items():
-        limit = 4 if source_name in SPORTS_SOURCES else max_per_source
+        limit = 6 if source_name in SPORTS_SOURCES else max_per_source
         xml_text, err = _fetch_page(feed_url)
         if not xml_text:
             log.warning(f"[Briefing] No se pudo descargar {source_name}: {err}")
@@ -1903,11 +1947,13 @@ def fetch_news_headlines(max_per_source: int = 7) -> list[dict]:
             log.warning(f"[Briefing] XML inválido de {source_name}")
             continue
 
-        count = 0
+        # Se recogen todos los items válidos y se ordenan por fecha antes de
+        # aplicar el límite: varios feeds (Marca Baloncesto, sin ir más lejos)
+        # no vienen ordenados, y cortar por orden de aparición dejaba fuera lo
+        # más reciente y relevante.
+        source_items: list[tuple[datetime, dict]] = []
         # RSS estándar
         for item in root.findall(".//item"):
-            if count >= limit:
-                break
             title_el = item.find("title")
             desc_el = item.find("description")
             if title_el is None or not title_el.text:
@@ -1925,22 +1971,19 @@ def fetch_news_headlines(max_per_source: int = 7) -> list[dict]:
                 desc = desc[:200]
             link_el = item.find("link")
             url = link_el.text.strip() if link_el is not None and link_el.text else ""
-            headlines.append({
+            source_items.append((pub_dt, {
                 "source": source_name,
                 "title": title,
                 "description": desc,
                 "url": url,
                 "published_at": pub_dt.isoformat(),
                 "profile": _source_profile(source_name),
-            })
-            count += 1
+            }))
 
         # Atom (por si algún feed usa <entry> en vez de <item>)
-        if count == 0:
+        if not source_items:
             ns = {"atom": "http://www.w3.org/2005/Atom"}
             for entry in root.findall(".//atom:entry", ns):
-                if count >= limit:
-                    break
                 title_el = entry.find("atom:title", ns)
                 summary_el = entry.find("atom:summary", ns)
                 if title_el is None or not title_el.text:
@@ -1959,17 +2002,20 @@ def fetch_news_headlines(max_per_source: int = 7) -> list[dict]:
                 url = ""
                 if link_el is not None:
                     url = (link_el.get("href") or "").strip()
-                headlines.append({
+                source_items.append((pub_dt, {
                     "source": source_name,
                     "title": title,
                     "description": desc,
                     "url": url,
                     "published_at": pub_dt.isoformat(),
                     "profile": _source_profile(source_name),
-                })
-                count += 1
+                }))
 
-        log.info(f"[Briefing] {source_name}: {count} titulares")
+        source_items.sort(key=lambda pair: pair[0], reverse=True)
+        selected = [item for _, item in source_items[:limit]]
+        headlines.extend(selected)
+
+        log.info(f"[Briefing] {source_name}: {len(selected)} titulares")
 
     return headlines
 
