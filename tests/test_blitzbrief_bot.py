@@ -551,7 +551,8 @@ class BlitzBriefTests(unittest.TestCase):
         self.assertIn("fallback_text", kwargs)
         self.assertIn("Titulo", kwargs["fallback_text"])
 
-    def test_bitcoin_block_includes_price_and_change(self):
+    @staticmethod
+    def _fake_price_response(change):
         class FakeResponse:
             ok = True
             text = ""
@@ -560,12 +561,64 @@ class BlitzBriefTests(unittest.TestCase):
                 return None
 
             def json(self):
-                return {"bitcoin": {"eur": 61234.0, "eur_24h_change": 4.2}}
+                return {"bitcoin": {"eur": 61234.0, "eur_24h_change": change}}
 
-        with patch.object(bot.requests, "get", return_value=FakeResponse()):
-            block = bot.fetch_bitcoin_block()
+        return FakeResponse()
 
-        self.assertEqual(block, "📈 Bitcoin: 61.234 € (+4.2%)")
+    def test_bitcoin_block_includes_price_and_change(self):
+        # Martes y variación pequeña: ni explicación ni contexto semanal.
+        martes = datetime(2026, 6, 2, 20, 30, tzinfo=ZoneInfo("Europe/Madrid"))
+
+        with patch.object(
+            bot.requests, "get", return_value=self._fake_price_response(1.2)
+        ), patch.object(bot, "_explain_bitcoin_move") as explain:
+            block = bot.fetch_bitcoin_block(now=martes)
+
+        self.assertEqual(block, "📈 Bitcoin: 61.234 € (+1.2%)")
+        explain.assert_not_called()
+
+    def test_bitcoin_block_explains_move_over_threshold(self):
+        martes = datetime(2026, 6, 2, 20, 30, tzinfo=ZoneInfo("Europe/Madrid"))
+
+        with patch.object(
+            bot.requests, "get", return_value=self._fake_price_response(-3.4)
+        ), patch.object(
+            bot, "_explain_bitcoin_move", return_value="Los fondos venden."
+        ) as explain:
+            block = bot.fetch_bitcoin_block(now=martes)
+
+        self.assertEqual(
+            block, "📉 Bitcoin: 61.234 € (-3.4%)\n   └ Los fondos venden."
+        )
+        self.assertEqual(explain.call_args.kwargs["period"], "24h")
+
+    def test_bitcoin_block_adds_weekly_context_on_sunday(self):
+        domingo = datetime(2026, 6, 7, 20, 30, tzinfo=ZoneInfo("Europe/Madrid"))
+
+        with patch.object(
+            bot.requests, "get", return_value=self._fake_price_response(0.5)
+        ), patch.object(
+            bot, "_fetch_bitcoin_weekly_change", return_value=-2.6
+        ), patch.object(
+            bot, "_explain_bitcoin_move", return_value="Bajan las compras de ETF."
+        ):
+            block = bot.fetch_bitcoin_block(now=domingo)
+
+        self.assertEqual(
+            block,
+            "📈 Bitcoin: 61.234 € (+0.5%)\n"
+            "   └ En la semana: -2.6%. Bajan las compras de ETF.",
+        )
+
+    def test_bitcoin_explanation_empty_without_headlines(self):
+        with patch.object(bot, "_fetch_crypto_headlines", return_value=[]):
+            self.assertEqual(bot._explain_bitcoin_move(-4.0), "")
+
+    def test_bitcoin_explanation_discards_nada(self):
+        with patch.object(
+            bot, "_fetch_crypto_headlines", return_value=["Some crypto headline"]
+        ), patch.object(bot, "_gemini_text", return_value="NADA"):
+            self.assertEqual(bot._explain_bitcoin_move(-4.0), "")
 
     def test_all_briefing_sources_have_profiles(self):
         all_sources = {**bot.NEWS_SOURCES, **bot.SPORTS_SOURCES}

@@ -321,6 +321,19 @@ ELPAIS_AUTHOR_FEEDS: tuple[str, ...] = (
 LOOKBACK_HOURS = 26  # 26h para cubrir holgadamente un día completo
 MAX_ARTICLES_PER_AUTHOR = 1
 
+# ── Bitcoin ───────────────────────────────────────────────────────
+# Variación en 24h a partir de la cual el bloque incluye una explicación.
+# Con el 5% original saltaba una vez cada varios meses; el 3% es un
+# movimiento ya notable pero que ocurre un par de veces al mes.
+BITCOIN_ALERT_THRESHOLD = 3.0
+# Día en que se añade contexto semanal aunque no haya habido sobresalto
+# (0 = lunes ... 6 = domingo).
+BITCOIN_WEEKLY_CONTEXT_WEEKDAY = 6
+CRYPTO_NEWS_FEEDS: dict[str, str] = {
+    "CoinDesk": "https://www.coindesk.com/arc/outboundfeeds/rss/",
+    "Cointelegraph": "https://cointelegraph.com/rss",
+}
+
 # User-Agent y cabeceras tipo navegador para las peticiones HTTP.
 # El País ha empezado a devolver 403 en las páginas /autor/<slug>/ cuando
 # solo se envía un User-Agent escueto, así que mandamos el conjunto
@@ -2110,10 +2123,142 @@ def fetch_tomorrow_weather_block() -> str:
 # ── Bitcoin ─────────────────────────────────────────────────────────
 
 
-def fetch_bitcoin_block() -> str:
+def _gemini_text(prompt: str, max_tokens: int = 512, temperature: float = 0.2) -> str:
+    """Manda un prompt a Gemini y devuelve el texto plano de la respuesta.
+
+    Devuelve "" si no hay API key o si la llamada falla: quien lo use debe
+    poder seguir sin explicación.
+    """
+    if not GEMINI_API_KEY:
+        return ""
+
+    url = (
+        "https://generativelanguage.googleapis.com/v1beta/models/"
+        "gemini-3-flash-preview:generateContent"
+    )
+    payload = {
+        "contents": [{"parts": [{"text": prompt}]}],
+        "generationConfig": {
+            "maxOutputTokens": max_tokens,
+            "temperature": temperature,
+        },
+    }
+    try:
+        resp = requests.post(
+            url,
+            headers={
+                "content-type": "application/json",
+                "x-goog-api-key": GEMINI_API_KEY,
+            },
+            json=payload,
+            timeout=60,
+        )
+        resp.raise_for_status()
+        candidates = resp.json().get("candidates", [])
+        if candidates:
+            parts = candidates[0].get("content", {}).get("parts", [])
+            if parts and parts[0].get("text"):
+                return parts[0]["text"].strip()
+    except requests.RequestException as e:
+        log.warning(f"[Gemini] Error al generar texto: {e}")
+    return ""
+
+
+def _fetch_crypto_headlines(limit_per_feed: int = 12) -> list[str]:
+    """Titulares recientes de medios crypto, para explicar movimientos."""
+    headlines: list[str] = []
+    for name, url in CRYPTO_NEWS_FEEDS.items():
+        try:
+            resp = requests.get(
+                url, headers={"User-Agent": USER_AGENT}, timeout=10
+            )
+            if not resp.ok:
+                continue
+            root = ET.fromstring(resp.text)
+        except (requests.RequestException, ET.ParseError) as e:
+            log.warning(f"[Bitcoin] Error al leer {name}: {e}")
+            continue
+
+        for item in root.findall(".//item")[:limit_per_feed]:
+            title = item.find("title")
+            if title is not None and title.text:
+                headlines.append(title.text.strip())
+
+    return headlines
+
+
+def _explain_bitcoin_move(change: float, period: str = "24h") -> str:
+    """Explicación en español (una o dos frases) del movimiento del precio.
+
+    Se apoya en titulares de medios crypto (en inglés) y le pide a Gemini
+    que los traduzca y resuma. Si no hay titulares que expliquen el
+    movimiento, o no hay API key, devuelve "" y el bloque va sin explicación.
+    """
+    headlines = _fetch_crypto_headlines()
+    if not headlines:
+        return ""
+
+    ventana = "las últimas 24 horas" if period == "24h" else "la última semana"
+    direccion = "subido" if change >= 0 else "bajado"
+    headlines_text = "\n".join(f"- {h}" for h in headlines)
+
+    prompt = f"""Eres un analista que escribe para alguien que NO sigue el mercado cripto.
+
+Bitcoin ha {direccion} un {abs(change):.1f}% en {ventana}.
+
+Con los titulares de abajo (están en inglés) explica en ESPAÑOL por qué.
+
+REGLAS:
+- Máximo 2 frases y 35 palabras en total.
+- Solo puedes usar información de los titulares. No inventes causas ni cifras.
+- Nombra el hecho concreto (quién, qué) y, si cabe, qué significa para el precio.
+- Lenguaje llano: si usas un término técnico (ETF, halving, recompras), acláralo en dos palabras.
+- Si ningún titular explica el movimiento, responde exactamente: NADA
+- Sin markdown, sin asteriscos, sin introducción ni cierre.
+
+TITULARES:
+{headlines_text}"""
+
+    texto = _gemini_text(prompt, max_tokens=300)
+    if not texto or texto.strip().upper().startswith("NADA"):
+        return ""
+
+    # Nos quedamos con una sola línea para que quepa bien en Telegram.
+    return " ".join(texto.split())
+
+
+def _fetch_bitcoin_weekly_change() -> Optional[float]:
+    """Variación porcentual de Bitcoin en los últimos 7 días."""
+    try:
+        resp = requests.get(
+            "https://api.coingecko.com/api/v3/coins/markets",
+            params={
+                "vs_currency": "eur",
+                "ids": "bitcoin",
+                "price_change_percentage": "7d",
+            },
+            timeout=10,
+        )
+        resp.raise_for_status()
+        rows = resp.json()
+    except (requests.RequestException, ValueError) as e:
+        log.warning(f"[Bitcoin] Error al obtener variación semanal: {e}")
+        return None
+
+    if not rows:
+        return None
+    return rows[0].get("price_change_percentage_7d_in_currency")
+
+
+def fetch_bitcoin_block(now: Optional[datetime] = None) -> str:
     """
     Devuelve un bloque con el precio de Bitcoin en EUR y variación 24h.
-    Si la variación es importante (>=5%), busca una noticia que lo explique.
+
+    Añade una explicación en español (generada con Gemini a partir de
+    titulares crypto) en dos casos:
+      - la variación de 24h supera BITCOIN_ALERT_THRESHOLD;
+      - es el día de contexto semanal, para enterarse de lo que ha movido
+        el mercado aunque no haya habido sobresaltos.
     Usa CoinGecko API (gratis, sin API key).
     """
     # ── Precio BTC/EUR ──────────────────────────────────────────────
@@ -2143,23 +2288,27 @@ def fetch_bitcoin_block() -> str:
     change_str = f" ({change:+.1f}%)" if change is not None else ""
     line = f"{arrow} Bitcoin: {price_str} €{change_str}"
 
-    # ── Si variación >= 5%, buscar noticia explicativa (CoinDesk) ──
-    if change is not None and abs(change) >= 5:
-        try:
-            rss_resp = requests.get(
-                "https://www.coindesk.com/arc/outboundfeeds/rss/",
-                headers={"User-Agent": USER_AGENT},
-                timeout=10,
-            )
-            if rss_resp.ok:
-                root = ET.fromstring(rss_resp.text)
-                items = root.findall(".//item")
-                if items:
-                    first_title = items[0].find("title")
-                    if first_title is not None and first_title.text:
-                        line += f"\n   └ {first_title.text.strip()}"
-        except (requests.RequestException, ET.ParseError) as e:
-            log.warning(f"[Bitcoin] Error al obtener noticias crypto: {e}")
+    # ── Movimiento fuerte del día: explicarlo ───────────────────────
+    if change is not None and abs(change) >= BITCOIN_ALERT_THRESHOLD:
+        explicacion = _explain_bitcoin_move(change, period="24h")
+        if explicacion:
+            line += f"\n   └ {explicacion}"
+        return line
+
+    # ── Día de contexto semanal ─────────────────────────────────────
+    tz = ZoneInfo("Europe/Madrid")
+    reference = (now or datetime.now(tz)).astimezone(tz)
+    if reference.weekday() != BITCOIN_WEEKLY_CONTEXT_WEEKDAY:
+        return line
+
+    weekly = _fetch_bitcoin_weekly_change()
+    if weekly is None:
+        return line
+
+    line += f"\n   └ En la semana: {weekly:+.1f}%."
+    explicacion = _explain_bitcoin_move(weekly, period="7d")
+    if explicacion:
+        line += f" {explicacion}"
 
     return line
 
