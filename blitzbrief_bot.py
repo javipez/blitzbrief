@@ -430,6 +430,11 @@ for _sports_source in SPORTS_SOURCES:
     )
 
 # Ligas ESPN a consultar para fútbol
+# Días de antelación con los que se anuncian los partidos. Antes solo se
+# consultaba el día en curso, así que la sección salía únicamente las
+# jornadas de partido: como recordatorio no servía de mucho.
+FIXTURES_LOOKAHEAD_DAYS = 6
+
 ESPN_FOOTBALL_LEAGUES: list[str] = [
     "esp.1",            # La Liga
     "esp.2",            # Segunda División
@@ -2023,36 +2028,63 @@ def fetch_news_headlines(max_per_source: int = 7) -> list[dict]:
 # ── Fixtures deportivos (ESPN API — gratuita, sin clave) ───────────
 
 
+def _fetch_espn_scoreboard(league: str, date_range: str) -> Optional[dict]:
+    """Descarga un scoreboard de ESPN para un rango de fechas.
+
+    ESPN devuelve 403 a `requests` porque filtra por huella TLS, igual que
+    hace El País. Se usa `_fetch_page`, que ya reintenta con curl_cffi
+    imitando a un Chrome real.
+    """
+    url = (
+        f"https://site.api.espn.com/apis/site/v2/sports/soccer/"
+        f"{league}/scoreboard?dates={date_range}"
+    )
+    text, err = _fetch_page(url)
+    if not text:
+        log.warning(f"[Fixtures] Error ESPN {league}: {err}")
+        return None
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        log.warning(f"[Fixtures] Respuesta no-JSON de ESPN {league}")
+        return None
+
+
+def _fixture_day_label(match_local: datetime, today: date) -> str:
+    """'Hoy', 'Mañana' o 'Sábado 22', según lo lejos que quede el partido."""
+    days_ahead = (match_local.date() - today).days
+    if days_ahead <= 0:
+        return "Hoy"
+    if days_ahead == 1:
+        return "Mañana"
+    weekdays = ["Lunes", "Martes", "Miércoles", "Jueves",
+                "Viernes", "Sábado", "Domingo"]
+    return f"{weekdays[match_local.weekday()]} {match_local.day}"
+
+
 def fetch_upcoming_fixtures() -> list[str]:
     """
-    Devuelve líneas con partidos de hoy para los equipos seguidos.
+    Devuelve líneas con los próximos partidos de los equipos seguidos.
     Usa la API pública de ESPN (sin clave, sin registro).
     """
     tz_madrid = ZoneInfo("Europe/Madrid")
     now = datetime.now(tz_madrid)
-    today_str = now.strftime("%Y%m%d")
+    today = now.date()
+    last_day = today + timedelta(days=FIXTURES_LOOKAHEAD_DAYS)
+    # ESPN acepta rangos, así que basta una petición por liga
+    date_range = f"{today.strftime('%Y%m%d')}-{last_day.strftime('%Y%m%d')}"
 
-    lines: list[str] = []
-    seen_events: set[str] = set()  # evitar duplicados entre ligas
+    fixtures: list[tuple[datetime, str]] = []
+    seen_events: set[str] = set()
 
-    # Nombres de equipos en minúsculas para comparar
     followed = {t.lower() for t in FOLLOWED_FOOTBALL_TEAMS}
 
     for league in ESPN_FOOTBALL_LEAGUES:
-        try:
-            url = (
-                f"https://site.api.espn.com/apis/site/v2/sports/soccer/"
-                f"{league}/scoreboard?dates={today_str}"
-            )
-            resp = requests.get(url, headers={"User-Agent": USER_AGENT}, timeout=10)
-            resp.raise_for_status()
-            data = resp.json()
-        except requests.RequestException as e:
-            log.warning(f"[Fixtures] Error ESPN {league}: {e}")
+        data = _fetch_espn_scoreboard(league, date_range)
+        if not data:
             continue
 
-        events = data.get("events", [])
-        for event in events:
+        for event in data.get("events", []):
             try:
                 event_id = event["id"]
                 if event_id in seen_events:
@@ -2062,7 +2094,6 @@ def fetch_upcoming_fixtures() -> list[str]:
                 home = competitors[0]["team"]["displayName"]
                 away = competitors[1]["team"]["displayName"]
 
-                # Solo partidos de equipos seguidos
                 if not any(
                     f in home.lower() or f in away.lower() for f in followed
                 ):
@@ -2070,24 +2101,30 @@ def fetch_upcoming_fixtures() -> list[str]:
 
                 seen_events.add(event_id)
 
-                # Hora del partido (viene en UTC)
                 match_utc = datetime.fromisoformat(
                     event["date"].replace("Z", "+00:00")
                 )
                 match_local = match_utc.astimezone(tz_madrid)
-                time_str = match_local.strftime("%H:%M")
+                # Un partido ya jugado hoy no es un recordatorio útil
+                if match_local < now - timedelta(hours=2):
+                    continue
 
                 league_name = ESPN_LEAGUE_DISPLAY_NAMES.get(league, league)
-
                 channel = COMPETITION_TV_SPAIN.get(league_name, "")
                 channel_str = f" — {channel}" if channel else ""
-                lines.append(
-                    f"⚽ {home} vs {away} ({league_name}) — {time_str}{channel_str}"
-                )
+                day_label = _fixture_day_label(match_local, today)
+
+                fixtures.append((
+                    match_local,
+                    f"⚽ {day_label} {match_local:%H:%M} — {home} vs {away} "
+                    f"({league_name}){channel_str}",
+                ))
             except (KeyError, ValueError, IndexError):
                 continue
 
-    log.info(f"[Fixtures] Partidos de hoy: {len(lines)}")
+    fixtures.sort(key=lambda pair: pair[0])
+    lines = [line for _, line in fixtures]
+    log.info(f"[Fixtures] Próximos partidos: {len(lines)}")
     return lines
 
 
@@ -2757,11 +2794,11 @@ def send_news_briefing() -> bool:
         briefing = "\n".join(lines[2:])   # el header ya va aparte
         header = lines[0]
 
-    # Partidos de hoy
+    # Próximos partidos
     fixtures = fetch_upcoming_fixtures()
     fixtures_section = ""
     if fixtures:
-        fixtures_section = "\n\n📅 PARTIDOS HOY:\n" + "\n".join(fixtures)
+        fixtures_section = "\n\n📅 PRÓXIMOS PARTIDOS:\n" + "\n".join(fixtures)
 
     message = f"{header}\n\n{briefing}{fixtures_section}"
     rich_message = _format_news_briefing_rich_html(header, briefing, fixtures_section)
@@ -2844,11 +2881,11 @@ def _format_news_briefing_rich_html(
     fixture_lines = [
         line.strip()
         for line in fixtures_section.splitlines()
-        if line.strip() and "PARTIDOS HOY" not in line
+        if line.strip() and "PRÓXIMOS PARTIDOS" not in line
     ]
     if fixture_lines:
         blocks.append("<hr/>")
-        blocks.append("<details open><summary>Partidos de hoy</summary><ul>")
+        blocks.append("<details open><summary>Próximos partidos</summary><ul>")
         for fixture in fixture_lines:
             blocks.append(f"<li>{html_escape(fixture)}</li>")
         blocks.append("</ul></details>")

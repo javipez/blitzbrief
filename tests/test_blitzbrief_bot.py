@@ -1,7 +1,8 @@
+import json
 import sys
 import types
 import unittest
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from unittest.mock import patch
 from zoneinfo import ZoneInfo
 
@@ -947,14 +948,14 @@ class BlitzBriefTests(unittest.TestCase):
         html = bot._format_news_briefing_rich_html(
             "📰 BRIEFING",
             "🌍 Internacional: Test\n   Por qué importa: Afecta a <mercados>.",
-            "\n\n📅 PARTIDOS HOY:\nReal Madrid - Málaga",
+            "\n\n📅 PRÓXIMOS PARTIDOS:\nReal Madrid - Málaga",
         )
 
         self.assertIn("<h1>📰 BRIEFING</h1>", html)
         self.assertIn("<h2>🌍 Internacional</h2>", html)
         self.assertIn("<p>Test</p>", html)
         self.assertIn("<blockquote><b>Por qué importa:</b> Afecta a &lt;mercados&gt;.</blockquote>", html)
-        self.assertIn("<details open><summary>Partidos de hoy</summary><ul>", html)
+        self.assertIn("<details open><summary>Próximos partidos</summary><ul>", html)
         self.assertIn("<li>Real Madrid - Málaga</li>", html)
 
     def test_news_briefing_html_renders_section_without_why_it_matters(self):
@@ -1606,6 +1607,64 @@ class BlitzBriefTests(unittest.TestCase):
         fuentes = {h["source"] for h in dep}
         self.assertGreater(len(fuentes), 1, "el deporte debe repartirse entre fuentes")
         self.assertIn("Marca Baloncesto", fuentes, "el baloncesto debe tener sitio")
+
+    def test_fixtures_usan_fetch_page_para_esquivar_el_403_de_espn(self):
+        """ESPN bloquea requests por huella TLS; _fetch_page reintenta."""
+        payload = json.dumps({"events": []})
+        with patch.object(bot, "_fetch_page", return_value=(payload, None)) as fetch:
+            bot.fetch_upcoming_fixtures()
+
+        self.assertTrue(fetch.called, "debe pasar por _fetch_page, no por requests")
+        pedidas = [c[0][0] for c in fetch.call_args_list]
+        self.assertTrue(all("site.api.espn.com" in u for u in pedidas))
+        # Una sola petición por liga: ESPN acepta rangos de fechas
+        self.assertEqual(len(pedidas), len(bot.ESPN_FOOTBALL_LEAGUES))
+        self.assertTrue(all("-" in u.split("dates=")[1] for u in pedidas))
+
+    def test_fixtures_incluyen_partidos_de_los_proximos_dias(self):
+        manana = datetime.now(ZoneInfo("Europe/Madrid")) + timedelta(days=2)
+        manana = manana.replace(hour=21, minute=0, second=0, microsecond=0)
+        payload = json.dumps({"events": [{
+            "id": "1",
+            "date": manana.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%MZ"),
+            "competitions": [{"competitors": [
+                {"team": {"displayName": "Espanyol"}},
+                {"team": {"displayName": "Real Madrid"}},
+            ]}],
+        }]})
+
+        with patch.object(bot, "_fetch_page", return_value=(payload, None)):
+            lines = bot.fetch_upcoming_fixtures()
+
+        self.assertTrue(lines)
+        self.assertIn("Espanyol vs Real Madrid", lines[0])
+        self.assertIn("La Liga", lines[0])
+        self.assertIn("DAZN", lines[0])
+        self.assertNotIn("Hoy", lines[0])
+
+    def test_fixtures_descartan_partidos_ya_jugados(self):
+        ayer = datetime.now(ZoneInfo("Europe/Madrid")) - timedelta(days=1)
+        payload = json.dumps({"events": [{
+            "id": "1",
+            "date": ayer.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%MZ"),
+            "competitions": [{"competitors": [
+                {"team": {"displayName": "Real Madrid"}},
+                {"team": {"displayName": "Getafe"}},
+            ]}],
+        }]})
+
+        with patch.object(bot, "_fetch_page", return_value=(payload, None)):
+            self.assertEqual(bot.fetch_upcoming_fixtures(), [])
+
+    def test_fixtures_vacios_si_espn_falla(self):
+        with patch.object(bot, "_fetch_page", return_value=(None, "403")):
+            self.assertEqual(bot.fetch_upcoming_fixtures(), [])
+
+    def test_etiqueta_de_dia_del_partido(self):
+        hoy = datetime(2026, 8, 22, 21, 0, tzinfo=ZoneInfo("Europe/Madrid"))
+        self.assertEqual(bot._fixture_day_label(hoy, date(2026, 8, 22)), "Hoy")
+        self.assertEqual(bot._fixture_day_label(hoy, date(2026, 8, 21)), "Mañana")
+        self.assertEqual(bot._fixture_day_label(hoy, date(2026, 8, 19)), "Sábado 22")
 
 
 if __name__ == "__main__":
