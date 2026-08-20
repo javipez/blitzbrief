@@ -398,7 +398,7 @@ SENT_RUNS_FILE = Path(__file__).parent / ".blitzbrief_sent_runs.json"
 AUTHORS_FILE = Path(__file__).parent / "authors.json"
 
 # ── Equipos a seguir ───────────────────────────────────────────────
-# Fútbol: equipos a seguir (nombres tal como aparecen en ESPN)
+# Fútbol: equipos a seguir (nombres tal como aparecen en futbolenlatv.es)
 FOLLOWED_FOOTBALL_TEAMS: list[str] = [
     "Real Madrid",
     "Málaga",
@@ -429,43 +429,32 @@ for _sports_source in SPORTS_SOURCES:
         },
     )
 
-# Ligas ESPN a consultar para fútbol
+# ── Partidos y programación de TV ──────────────────────────────────
+# futbolenlatv.es publica en su portada los partidos de las próximas dos
+# semanas con el canal y el dial exactos. Se usa solo la portada: su
+# robots.txt restringe /baloncesto, /agenda, /partido y /api, pero no la
+# raíz. Una petición al día cubre todo lo que necesitamos.
+FUTBOL_EN_LA_TV_URL = "https://www.futbolenlatv.es/"
+
 # Días de antelación con los que se anuncian los partidos: hoy y mañana.
 # Con ventanas más largas el mismo partido se repetía cada mañana hasta
 # jugarse, que cansa más de lo que avisa.
 FIXTURES_LOOKAHEAD_DAYS = 1
 
-ESPN_FOOTBALL_LEAGUES: list[str] = [
-    "esp.1",            # La Liga
-    "uefa.champions",   # Champions League
-    "uefa.europa",      # Europa League
-    "esp.copa_del_rey", # Copa del Rey
-]
+# Canal 7 de Movistar+, incluido en la suscripción básica: emite un partido
+# destacado de Premier, Serie A, Bundesliga o LaLiga casi cada jornada.
+MOVISTAR_PLUS_PATTERN = re.compile(r"Movistar Plus\+\s*\(M7\)", re.IGNORECASE)
 
-# Nombre de competición legible por código de liga ESPN. Las claves deben
-# coincidir con COMPETITION_TV_SPAIN; el nombre libre que devuelve ESPN
-# (data.leagues[0].name, ej. "Spanish LaLiga") no encaja con esas claves.
-ESPN_LEAGUE_DISPLAY_NAMES: dict[str, str] = {
-    "esp.1": "La Liga",
-    "esp.2": "Segunda División",
-    "uefa.champions": "UEFA Champions League",
-    "uefa.europa": "UEFA Europa League",
-    "esp.copa_del_rey": "Copa del Rey",
-}
+# Canales que no aportan nada en un aviso doméstico
+IGNORED_TV_CHANNELS: tuple[str, ...] = ("laliga tv bar", "ver en directo")
 
-# Canal de TV típico por competición en España (derechos 2025-26)
-COMPETITION_TV_SPAIN: dict[str, str] = {
-    "La Liga": "DAZN / Movistar+ LaLiga",
-    "Segunda División": "DAZN",
-    "Copa del Rey": "DAZN / Movistar+",
-    "Supercopa de España": "DAZN",
-    "UEFA Champions League": "Movistar+ Champions",
-    "UEFA Europa League": "DAZN",
-    "UEFA Conference League": "DAZN",
-    "Liga ACB": "Movistar+ Deportes",
-    "EuroLeague": "DAZN",
-    "EuroCup": "DAZN",
-}
+# Cuántos canales se listan por partido antes de cortar
+MAX_TV_CHANNELS_PER_MATCH = 2
+
+# La portada mezcla masculino y femenino, y "Real Madrid" también casa con
+# "Real Madrid Femenino". Se excluye para no cambiar lo que se venía
+# avisando; basta vaciar la tupla para volver a incluirlo.
+EXCLUDED_COMPETITION_KEYWORDS: tuple[str, ...] = ("femenin",)
 
 # ── Entrenos del box de CrossFit (Box Olimpo) ─────────────────────
 # El blog publica los entrenos de una semana en un post cuyo slug lleva
@@ -2027,26 +2016,96 @@ def fetch_news_headlines(max_per_source: int = 7) -> list[dict]:
 # ── Fixtures deportivos (ESPN API — gratuita, sin clave) ───────────
 
 
-def _fetch_espn_scoreboard(league: str, date_range: str) -> Optional[dict]:
-    """Descarga un scoreboard de ESPN para un rango de fechas.
+def _clean_tv_channel(raw: str) -> str:
+    """Normaliza el nombre de un canal tal como lo publica futbolenlatv."""
+    channel = raw.split(":")[0].strip()
+    channel = re.sub(r"\s+", " ", channel)
+    return channel
 
-    ESPN devuelve 403 a `requests` porque filtra por huella TLS, igual que
-    hace El País. Se usa `_fetch_page`, que ya reintenta con curl_cffi
-    imitando a un Chrome real.
+
+def _match_channels(cell) -> list[str]:
+    """Canales de una fila, ya limpios y sin los que no sirven en casa."""
+    channels: list[str] = []
+    for item in cell.select("ul.listaCanales li"):
+        channel = _clean_tv_channel(item.get_text(" ", strip=True))
+        if not channel:
+            continue
+        if any(skip in channel.lower() for skip in IGNORED_TV_CHANNELS):
+            continue
+        if channel not in channels:
+            channels.append(channel)
+    return channels
+
+
+def _parse_tv_matches(html: str) -> list[dict]:
+    """Extrae los partidos de la portada de futbolenlatv.es.
+
+    Cada fila trae microdatos schema.org/Event, así que la hora se lee de
+    `startDate` (en UTC) en vez de reconstruirla del encabezado del día:
+    es bastante menos frágil.
     """
-    url = (
-        f"https://site.api.espn.com/apis/site/v2/sports/soccer/"
-        f"{league}/scoreboard?dates={date_range}"
-    )
-    text, err = _fetch_page(url)
-    if not text:
-        log.warning(f"[Fixtures] Error ESPN {league}: {err}")
-        return None
-    try:
-        return json.loads(text)
-    except json.JSONDecodeError:
-        log.warning(f"[Fixtures] Respuesta no-JSON de ESPN {league}")
-        return None
+    soup = BeautifulSoup(html, "html.parser")
+    matches: list[dict] = []
+    competition = ""
+
+    for row in soup.find_all("tr"):
+        classes = row.get("class") or []
+        if "cabeceraCompericion" in classes:
+            competition = row.get_text(" ", strip=True)
+            continue
+        if "cabeceraTabla" in classes:
+            continue
+
+        cells = row.find_all("td")
+        if len(cells) < 5:
+            continue
+
+        start = cells[4].find("meta", attrs={"itemprop": "startDate"})
+        if start is None or not start.get("content"):
+            continue
+        try:
+            kickoff = datetime.fromisoformat(start["content"])
+        except ValueError:
+            continue
+        kickoff = kickoff.replace(tzinfo=timezone.utc)
+
+        home = cells[2].get_text(" ", strip=True)
+        away = cells[3].get_text(" ", strip=True)
+        if not home or not away:
+            continue
+
+        haystack = _normalize_text(f"{competition} {home} {away}")
+        if any(word in haystack for word in EXCLUDED_COMPETITION_KEYWORDS):
+            continue
+
+        matches.append({
+            "kickoff": kickoff,
+            "competition": competition,
+            "home": home,
+            "away": away,
+            "channels": _match_channels(cells[4]),
+        })
+
+    return matches
+
+
+def _fetch_tv_matches() -> list[dict]:
+    """Descarga y parsea la portada de futbolenlatv.es."""
+    html, err = _fetch_page(FUTBOL_EN_LA_TV_URL)
+    if not html:
+        log.warning(f"[Fixtures] No se pudo descargar futbolenlatv: {err}")
+        return []
+    matches = _parse_tv_matches(html)
+    log.info(f"[Fixtures] {len(matches)} partidos con TV encontrados")
+    return matches
+
+
+def _within_lookahead(kickoff_local: datetime, now: datetime) -> bool:
+    """¿El partido cae en la ventana de aviso y no se ha jugado ya?"""
+    days_ahead = (kickoff_local.date() - now.date()).days
+    if not 0 <= days_ahead <= FIXTURES_LOOKAHEAD_DAYS:
+        return False
+    return kickoff_local >= now - timedelta(hours=2)
 
 
 def _fixture_day_label(match_local: datetime, today: date) -> str:
@@ -2061,69 +2120,71 @@ def _fixture_day_label(match_local: datetime, today: date) -> str:
     return f"{weekdays[match_local.weekday()]} {match_local.day}"
 
 
-def fetch_upcoming_fixtures() -> list[str]:
-    """
-    Devuelve líneas con los próximos partidos de los equipos seguidos.
-    Usa la API pública de ESPN (sin clave, sin registro).
-    """
+def _format_fixture_line(match: dict, match_local: datetime, today: date) -> str:
+    channels = match["channels"][:MAX_TV_CHANNELS_PER_MATCH]
+    channel_str = f" — {', '.join(channels)}" if channels else ""
+    competition = f" ({match['competition']})" if match["competition"] else ""
+    return (
+        f"⚽ {_fixture_day_label(match_local, today)} {match_local:%H:%M} — "
+        f"{match['home']} vs {match['away']}{competition}{channel_str}"
+    )
+
+
+def fetch_upcoming_fixtures(matches: Optional[list[dict]] = None) -> list[str]:
+    """Partidos de hoy y mañana de los equipos seguidos, con canal y dial."""
     tz_madrid = ZoneInfo("Europe/Madrid")
     now = datetime.now(tz_madrid)
-    today = now.date()
-    last_day = today + timedelta(days=FIXTURES_LOOKAHEAD_DAYS)
-    # ESPN acepta rangos, así que basta una petición por liga
-    date_range = f"{today.strftime('%Y%m%d')}-{last_day.strftime('%Y%m%d')}"
+    followed = {_normalize_text(t) for t in FOLLOWED_FOOTBALL_TEAMS}
 
-    fixtures: list[tuple[datetime, str]] = []
-    seen_events: set[str] = set()
+    if matches is None:
+        matches = _fetch_tv_matches()
 
-    followed = {t.lower() for t in FOLLOWED_FOOTBALL_TEAMS}
-
-    for league in ESPN_FOOTBALL_LEAGUES:
-        data = _fetch_espn_scoreboard(league, date_range)
-        if not data:
+    selected: list[tuple[datetime, str]] = []
+    for match in matches:
+        teams = _normalize_text(f"{match['home']} {match['away']}")
+        if not any(team in teams for team in followed):
             continue
+        match_local = match["kickoff"].astimezone(tz_madrid)
+        if not _within_lookahead(match_local, now):
+            continue
+        selected.append(
+            (match_local, _format_fixture_line(match, match_local, now.date()))
+        )
 
-        for event in data.get("events", []):
-            try:
-                event_id = event["id"]
-                if event_id in seen_events:
-                    continue
-
-                competitors = event["competitions"][0]["competitors"]
-                home = competitors[0]["team"]["displayName"]
-                away = competitors[1]["team"]["displayName"]
-
-                if not any(
-                    f in home.lower() or f in away.lower() for f in followed
-                ):
-                    continue
-
-                seen_events.add(event_id)
-
-                match_utc = datetime.fromisoformat(
-                    event["date"].replace("Z", "+00:00")
-                )
-                match_local = match_utc.astimezone(tz_madrid)
-                # Un partido ya jugado hoy no es un recordatorio útil
-                if match_local < now - timedelta(hours=2):
-                    continue
-
-                league_name = ESPN_LEAGUE_DISPLAY_NAMES.get(league, league)
-                channel = COMPETITION_TV_SPAIN.get(league_name, "")
-                channel_str = f" — {channel}" if channel else ""
-                day_label = _fixture_day_label(match_local, today)
-
-                fixtures.append((
-                    match_local,
-                    f"⚽ {day_label} {match_local:%H:%M} — {home} vs {away} "
-                    f"({league_name}){channel_str}",
-                ))
-            except (KeyError, ValueError, IndexError):
-                continue
-
-    fixtures.sort(key=lambda pair: pair[0])
-    lines = [line for _, line in fixtures]
+    selected.sort(key=lambda pair: pair[0])
+    lines = [line for _, line in selected]
     log.info(f"[Fixtures] Próximos partidos: {len(lines)}")
+    return lines
+
+
+def fetch_movistar_plus_highlights(
+    matches: Optional[list[dict]] = None,
+) -> list[str]:
+    """Lo que emite hoy y mañana el canal 7, incluido en la cuota básica."""
+    tz_madrid = ZoneInfo("Europe/Madrid")
+    now = datetime.now(tz_madrid)
+
+    if matches is None:
+        matches = _fetch_tv_matches()
+
+    selected: list[tuple[datetime, str]] = []
+    for match in matches:
+        if not any(MOVISTAR_PLUS_PATTERN.search(c) for c in match["channels"]):
+            continue
+        match_local = match["kickoff"].astimezone(tz_madrid)
+        if not _within_lookahead(match_local, now):
+            continue
+        competition = f" ({match['competition']})" if match["competition"] else ""
+        selected.append((
+            match_local,
+            f"📺 {_fixture_day_label(match_local, now.date())} "
+            f"{match_local:%H:%M} — {match['home']} vs {match['away']}"
+            f"{competition}",
+        ))
+
+    selected.sort(key=lambda pair: pair[0])
+    lines = [line for _, line in selected]
+    log.info(f"[Fixtures] Destacados en Movistar Plus+: {len(lines)}")
     return lines
 
 
@@ -2793,11 +2854,18 @@ def send_news_briefing() -> bool:
         briefing = "\n".join(lines[2:])   # el header ya va aparte
         header = lines[0]
 
-    # Próximos partidos
-    fixtures = fetch_upcoming_fixtures()
+    # Próximos partidos y destacados de Movistar+ (una sola descarga)
+    tv_matches = _fetch_tv_matches()
+    fixtures = fetch_upcoming_fixtures(tv_matches)
     fixtures_section = ""
     if fixtures:
         fixtures_section = "\n\n📅 PRÓXIMOS PARTIDOS:\n" + "\n".join(fixtures)
+
+    highlights = fetch_movistar_plus_highlights(tv_matches)
+    if highlights:
+        fixtures_section += (
+            "\n\n📺 EN MOVISTAR PLUS+ (M7):\n" + "\n".join(highlights)
+        )
 
     message = f"{header}\n\n{briefing}{fixtures_section}"
     rich_message = _format_news_briefing_rich_html(header, briefing, fixtures_section)
@@ -2880,7 +2948,9 @@ def _format_news_briefing_rich_html(
     fixture_lines = [
         line.strip()
         for line in fixtures_section.splitlines()
-        if line.strip() and "PRÓXIMOS PARTIDOS" not in line
+        if line.strip()
+        and "PRÓXIMOS PARTIDOS" not in line
+        and "MOVISTAR PLUS+" not in line
     ]
     if fixture_lines:
         blocks.append("<hr/>")
