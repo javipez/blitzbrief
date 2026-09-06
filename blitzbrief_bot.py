@@ -456,6 +456,14 @@ MAX_TV_CHANNELS_PER_MATCH = 2
 # avisando; basta vaciar la tupla para volver a incluirlo.
 EXCLUDED_COMPETITION_KEYWORDS: tuple[str, ...] = ("femenin",)
 
+# En torneos de cantera puede aparecer el nombre del club sin categoría.
+# Este filtro solo afecta a los equipos seguidos, no a los destacados de TV.
+YOUTH_COMPETITION_PATTERN = re.compile(
+    r"\b(?:juvenil\w*|cadete\w*|infantil\w*|alevin\w*|"
+    r"benjamin\w*|prebenjamin\w*|youth|cantera|"
+    r"sub[\s-]?\d{1,2}|u[\s-]?\d{1,2})\b"
+)
+
 # ── Entrenos del box de CrossFit (Box Olimpo) ─────────────────────
 # El blog publica los entrenos de una semana en un post cuyo slug lleva
 # el rango lunes-domingo, p. ej. /entrenamientos-06-07-2026-al-12-07-2026.
@@ -2141,8 +2149,16 @@ def fetch_upcoming_fixtures(matches: Optional[list[dict]] = None) -> list[str]:
 
     selected: list[tuple[datetime, str]] = []
     for match in matches:
-        teams = _normalize_text(f"{match['home']} {match['away']}")
-        if not any(team in teams for team in followed):
+        # Comparar equipos completos evita confundir Real Madrid con su C,
+        # Castilla, femenino o juveniles. La competición cubre nombres ambiguos.
+        teams = {_normalize_text(match["home"]), _normalize_text(match["away"])}
+        if not followed.intersection(teams):
+            continue
+        category = _normalize_text(
+            f"{match['competition']} {match['home']} {match['away']}"
+        )
+        if (any(word in category for word in EXCLUDED_COMPETITION_KEYWORDS)
+                or YOUTH_COMPETITION_PATTERN.search(category)):
             continue
         match_local = match["kickoff"].astimezone(tz_madrid)
         if not _within_lookahead(match_local, now):

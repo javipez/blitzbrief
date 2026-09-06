@@ -1658,6 +1658,41 @@ class BlitzBriefTests(unittest.TestCase):
         with patch.object(bot, "_fetch_page", return_value=(html, None)):
             self.assertEqual(bot.fetch_upcoming_fixtures(), [])
 
+    def test_fixtures_solo_primer_equipo_masculino(self):
+        manana = datetime.now(ZoneInfo("Europe/Madrid")) + timedelta(days=1)
+        kickoff = manana.replace(hour=19, minute=0).astimezone(timezone.utc)
+        casos = [
+            ("Real Madrid C", "Segunda Federación", False),
+            ("Real Madrid Castilla", "Primera Federación", False),
+            ("Real Madrid Femenino", "Liga F", False),
+            ("Real Madrid Juvenil", "Copa del Rey", False),
+            ("Real Madrid", "UEFA Youth League", False),
+            ("Real Madrid", "División de Honor Juvenil", False),
+            ("Real Madrid", "Torneo Alevín", False),
+            ("Real Madrid", "Campeonato Sub-19", False),
+            ("Real Madrid", "Torneo U17", False),
+            ("Real Madrid", "Champions League Femenina", False),
+            ("Real Madrid", "La Liga EA Sports", True),
+            ("Real Madrid", "Champions League", True),
+            ("Real Madrid", "Copa del Rey", True),
+            ("Real Madrid", "Amistoso", True),
+            ("  REAL  MADRID ", "La Liga", True),
+            ("Málaga", "La Liga Hypermotion", True),
+        ]
+        for equipo, competicion, esperado in casos:
+            for local in (True, False):
+                with self.subTest(equipo=equipo, competicion=competicion, local=local):
+                    # Pasar la lista también prueba el camino de descarga compartida.
+                    match = {
+                        "kickoff": kickoff, "competition": competicion,
+                        "home": equipo if local else "Rival",
+                        "away": "Rival" if local else equipo,
+                        "channels": ["DAZN"],
+                    }
+                    self.assertEqual(
+                        len(bot.fetch_upcoming_fixtures([match])), int(esperado)
+                    )
+
     def test_fixtures_descartan_lo_que_cae_fuera_de_la_ventana(self):
         lejos = datetime.now(ZoneInfo("Europe/Madrid")) + timedelta(days=5)
         ayer = datetime.now(ZoneInfo("Europe/Madrid")) - timedelta(days=1)
