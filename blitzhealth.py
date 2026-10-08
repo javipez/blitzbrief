@@ -29,6 +29,10 @@ from typing import Optional
 from zoneinfo import ZoneInfo
 
 import requests
+from content_security import (
+    GEMINI_SYSTEM_INSTRUCTION, SecretRedactionFilter, clean_article, output_links_allowed,
+    visible_text,
+)
 from bs4 import BeautifulSoup
 
 # ---------------------------------------------------------------------------
@@ -81,6 +85,7 @@ logging.basicConfig(
     datefmt="%H:%M:%S",
 )
 log = logging.getLogger("blitzhealth")
+log.addFilter(SecretRedactionFilter(TELEGRAM_BOT_TOKEN, GEMINI_API_KEY))
 
 
 # ---------------------------------------------------------------------------
@@ -208,15 +213,13 @@ def fetch_rss_articles(
         subtitle = ""
         if desc_el is not None and desc_el.text:
             subtitle = unescape(desc_el.text)
-            subtitle = BeautifulSoup(subtitle, "html.parser").get_text(strip=True)
+            subtitle = visible_text(subtitle)
 
         # Content:encoded (algunos feeds ponen el contenido completo aquí)
         content_el = item.find("{http://purl.org/rss/1.0/modules/content/}encoded")
         full_content = ""
         if content_el is not None and content_el.text:
-            full_content = BeautifulSoup(
-                unescape(content_el.text), "html.parser"
-            ).get_text(strip=True)
+            full_content = visible_text(unescape(content_el.text))
 
         articles.append({
             "title": title,
@@ -464,6 +467,7 @@ def _format_articles_for_prompt(articles: list[dict]) -> str:
 
     content = ""
     for art in articles:
+        art = clean_article(art)
         date_str = art["date"].strftime("%d/%m") if art.get("date") else "?"
         content += f"\n[{date_str}] {art.get('author', art.get('source', 'Fuente'))}: {art['title']}\n"
         content += f"Fuente: {art.get('source', '')}\n"
@@ -491,6 +495,13 @@ def generate_weekend_digest(
     if not health_data and not author_articles and not longform_articles:
         log.info("Sin contenido nuevo esta semana, nada que resumir.")
         return None
+
+    health_data = {author: [clean_article(a) for a in articles]
+                   for author, articles in health_data.items()}
+    author_articles = [clean_article(a) for a in author_articles]
+    longform_articles = [clean_article(a) for a in longform_articles]
+    article_urls = [a.get("url", "") for articles in health_data.values() for a in articles]
+    article_urls += [a.get("url", "") for a in author_articles + longform_articles]
 
     # Construir el bloque de contenido para el prompt
     health_block = ""
@@ -560,6 +571,7 @@ LECTURAS LARGAS / CONTEXTO:
         "gemini-3-flash-preview:generateContent"
     )
     payload = {
+        "systemInstruction": {"parts": [{"text": GEMINI_SYSTEM_INSTRUCTION}]},
         "contents": [{"parts": [{"text": prompt}]}],
         "generationConfig": {"maxOutputTokens": 8192},
     }
@@ -583,7 +595,11 @@ LECTURAS LARGAS / CONTEXTO:
             if candidates:
                 parts = candidates[0].get("content", {}).get("parts", [])
                 if parts and parts[0].get("text"):
-                    return parts[0]["text"]
+                    text = parts[0]["text"]
+                    if not output_links_allowed(text, article_urls):
+                        log.warning("[Weekend] Respuesta descartada: enlace no autorizado.")
+                        return None
+                    return text
             log.error(
                 f"Respuesta inesperada de Gemini (intento {attempt + 1}): {data}"
             )
@@ -883,7 +899,7 @@ def main() -> None:
     if not digest:
         log.warning("No se pudo generar el digest. Abortando.")
         send_telegram_text(
-            "⚠️ Blitz Weekend: Gemini no respondió tras 3 intentos. "
+            "⚠️ Blitz Weekend: no se obtuvo un resumen válido de Gemini. "
             "Sin digest esta semana."
         )
         sys.exit(1)

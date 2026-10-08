@@ -42,6 +42,10 @@ from typing import Callable, Optional
 from zoneinfo import ZoneInfo
 
 import requests
+from content_security import (
+    GEMINI_SYSTEM_INSTRUCTION, SecretRedactionFilter, clean_article, output_links_allowed,
+    visible_soup, visible_text,
+)
 from bs4 import BeautifulSoup
 
 # curl_cffi imita el TLS fingerprint de un navegador real, lo que es
@@ -488,6 +492,7 @@ logging.basicConfig(
     format="%(asctime)s [%(levelname)s] %(message)s",
 )
 log = logging.getLogger(__name__)
+log.addFilter(SecretRedactionFilter(TELEGRAM_BOT_TOKEN, GEMINI_API_KEY))
 
 # ---------------------------------------------------------------------------
 # Funciones auxiliares
@@ -1325,7 +1330,7 @@ def _fetch_elpais_feed_articles(
                 continue
 
             desc = item.findtext("description") or ""
-            subtitle = BeautifulSoup(desc, "html.parser").get_text(" ", strip=True)
+            subtitle = visible_text(desc)
             category = item.findtext("category") or ""
 
             seen_urls.add(href)
@@ -1356,7 +1361,7 @@ def _fetch_elpais_author_page_articles(
             errors.append(f"El País — {author_name}: {err}")
         return []
 
-    soup = BeautifulSoup(html, "html.parser")
+    soup = visible_soup(html)
     articles = []
 
     for article_el in soup.select("article"):
@@ -1584,7 +1589,7 @@ def _fetch_elplural_tag_articles(
             errors.append(f"El Plural — {author_name}: {err}")
         return []
 
-    soup = BeautifulSoup(html, "html.parser")
+    soup = visible_soup(html)
     articles = []
 
     # Los artículos están en divs .item con un <h3><a>
@@ -1715,7 +1720,7 @@ def fetch_rss_articles(
             from html import unescape
             subtitle = unescape(raw_description)
             # Eliminar tags HTML
-            subtitle = BeautifulSoup(subtitle, "html.parser").get_text(strip=True)
+            subtitle = visible_text(subtitle)
 
         articles.append({
             "title": title.strip(),
@@ -1759,7 +1764,7 @@ def fetch_podcast_segments(
         title_el = item.find("title")
         if title_el is None or not title_el.text:
             continue
-        title = title_el.text.strip()
+        title = visible_text(title_el.text)
 
         # Comprobar que el título empieza con el filtro (ej. "La Contra |")
         # para evitar falsos positivos ("guerra contra Irán", etc.)
@@ -1870,7 +1875,7 @@ def fetch_random_elpais_article(slug: str) -> Optional[dict]:
         if not html:
             continue
 
-        soup = BeautifulSoup(html, "html.parser")
+        soup = visible_soup(html)
         articles = []
 
         for article_el in soup.select("article"):
@@ -1965,10 +1970,10 @@ def fetch_news_headlines(max_per_source: int = 7) -> list[dict]:
             pub_dt = _entry_published_at(item)
             if pub_dt is None or pub_dt < cutoff:
                 continue
-            title = title_el.text.strip()
+            title = visible_text(title_el.text)
             desc = ""
             if desc_el is not None and desc_el.text:
-                desc = BeautifulSoup(desc_el.text, "html.parser").get_text(strip=True)
+                desc = visible_text(desc_el.text)
                 desc = desc[:200]
             link_el = item.find("link")
             url = link_el.text.strip() if link_el is not None and link_el.text else ""
@@ -1993,12 +1998,10 @@ def fetch_news_headlines(max_per_source: int = 7) -> list[dict]:
                 pub_dt = _entry_published_at(entry)
                 if pub_dt is None or pub_dt < cutoff:
                     continue
-                title = title_el.text.strip()
+                title = visible_text(title_el.text)
                 desc = ""
                 if summary_el is not None and summary_el.text:
-                    desc = BeautifulSoup(
-                        summary_el.text, "html.parser"
-                    ).get_text(strip=True)[:200]
+                    desc = visible_text(summary_el.text)[:200]
                 link_el = entry.find("atom:link", ns)
                 url = ""
                 if link_el is not None:
@@ -2347,6 +2350,7 @@ def _gemini_text(prompt: str, max_tokens: int = 512, temperature: float = 0.2) -
         "gemini-3-flash-preview:generateContent"
     )
     payload = {
+        "systemInstruction": {"parts": [{"text": GEMINI_SYSTEM_INSTRUCTION}]},
         "contents": [{"parts": [{"text": prompt}]}],
         "generationConfig": {
             "maxOutputTokens": max_tokens,
@@ -2368,7 +2372,11 @@ def _gemini_text(prompt: str, max_tokens: int = 512, temperature: float = 0.2) -
         if candidates:
             parts = candidates[0].get("content", {}).get("parts", [])
             if parts and parts[0].get("text"):
-                return parts[0]["text"].strip()
+                text = parts[0]["text"].strip()
+                if not output_links_allowed(text):
+                    log.warning("[Gemini] Respuesta descartada: enlace no autorizado.")
+                    return ""
+                return text
     except requests.RequestException as e:
         log.warning(f"[Gemini] Error al generar texto: {e}")
     return ""
@@ -2392,7 +2400,7 @@ def _fetch_crypto_headlines(limit_per_feed: int = 12) -> list[str]:
         for item in root.findall(".//item")[:limit_per_feed]:
             title = item.find("title")
             if title is not None and title.text:
-                headlines.append(title.text.strip())
+                headlines.append(visible_text(title.text))
 
     return headlines
 
@@ -2410,7 +2418,7 @@ def _explain_bitcoin_move(change: float, period: str = "24h") -> str:
 
     ventana = "las últimas 24 horas" if period == "24h" else "la última semana"
     direccion = "subido" if change >= 0 else "bajado"
-    headlines_text = "\n".join(f"- {h}" for h in headlines)
+    headlines_text = "\n".join(f"- {visible_text(h)}" for h in headlines)
 
     prompt = f"""Eres un analista que escribe para alguien que NO sigue el mercado cripto.
 
@@ -2715,6 +2723,8 @@ def generate_news_briefing(headlines: list[dict]) -> Optional[str]:
         log.info("[Briefing] Sin titulares, nada que resumir.")
         return None
 
+    headlines = [clean_article(h) for h in headlines]
+
     # Preparar los titulares como texto
     headlines_text = ""
     for h in headlines:
@@ -2800,6 +2810,7 @@ TITULARES (única fuente válida):
         "gemini-3-flash-preview:generateContent"
     )
     payload = {
+        "systemInstruction": {"parts": [{"text": GEMINI_SYSTEM_INSTRUCTION}]},
         "contents": [{"parts": [{"text": prompt}]}],
         # temperature baja para reducir alucinaciones: queremos extracción
         # casi literal de los titulares, no creatividad.
@@ -2824,7 +2835,11 @@ TITULARES (única fuente válida):
             if candidates:
                 parts = candidates[0].get("content", {}).get("parts", [])
                 if parts and parts[0].get("text"):
-                    return _filter_ungrounded_tech_section(parts[0]["text"], headlines)
+                    text = parts[0]["text"]
+                    if not output_links_allowed(text, [h.get("url", "") for h in headlines]):
+                        log.warning("[Briefing] Respuesta descartada: enlace no autorizado.")
+                        return None
+                    return _filter_ungrounded_tech_section(text, headlines)
             log.error(f"[Briefing] Respuesta inesperada de Gemini: {data}")
         except requests.RequestException as e:
             log.error(f"[Briefing] Error al llamar a Gemini API (intento {attempt + 1}): {e}")
