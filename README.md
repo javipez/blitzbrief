@@ -9,6 +9,7 @@ Bot de Telegram que cada mañana te envía un **briefing de noticias generado co
 - **Digest de columnistas** — Consulta las páginas de autor de El País, El Plural y feeds RSS para detectar artículos nuevos
 - **Blitz Weekend** — Cada domingo prepara un resumen semanal con salud/longevidad, columnas, lecturas largas y contexto
 - **Podcasts** — Detecta segmentos de podcast por título y te envía el audio directamente en Telegram
+- **Partidos y televisión** — Avisa de los partidos de hoy y mañana del Real Madrid y el Málaga CF con canal y dial, y de la Euroliga/ACB y el fútbol que dan en los canales incluidos en la cuota básica de Movistar+ (dial 7 y Vamos)
 - **Entrenos del box** — Avisa (con enlace) cuando el box de CrossFit publica los entrenos de la semana, y los sirve on-demand con `/box`
 - **Alertas de errores** — Te avisa si alguna fuente falla
 
@@ -104,5 +105,7 @@ authors.json             # Autores configurados (editable desde Telegram)
 - `.blitzbrief_seen_articles.json` evita enviar duplicados (también el aviso de entrenos, que llega una sola vez por semana)
 - El aviso de entrenos pregunta a la API de WordPress del blog (`wp-json`) cuál es el último post `entrenamientos-DD-MM-YYYY-al-DD-MM-YYYY`; si esa API falla, sondea las URLs de la semana en curso y la siguiente. Solo avisa si la semana no ha terminado. Se desactiva dejando vacío `BOX_WORKOUTS_URL_TEMPLATE`
 - El digest de la tarde avisa también cuando ningún autor ha publicado ("Hoy no hay artículos nuevos de tus autores"), para que el silencio no se confunda con un fallo del bot
+- Los partidos salen de dos fuentes: **futbolenlatv.es** (fútbol, solo la portada) y la **guía de programación de Movistar+** (Euroliga y ACB en el dial 7 y en Vamos). El ✅ marca los partidos que entran en la cuota básica. Para comprobar que ambas responden: `python blitzbrief_bot.py --preview-partidos`
+- Los equipos seguidos se configuran en `FOLLOWED_FOOTBALL_TEAMS` y las competiciones de baloncesto en `BASKETBALL_COMPETITION_PATTERN`, ambos en `blitzbrief_bot.py`
 - Si algún medio cambia su web, el parser puede necesitar ajustes (scraping HTML, no API oficial)
 - El script es respetuoso con los servidores: una petición por autor, sin concurrencia agresiva

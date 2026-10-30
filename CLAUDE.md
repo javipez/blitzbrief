@@ -10,7 +10,9 @@ domingos. Corre en producción como servicio systemd en el VPS `bots-01`.
 - Arrancar en local (digest completo, una vez): `python blitzbrief_bot.py`
 - Modo bot interactivo (escucha comandos de Telegram): `python blitzbrief_bot.py --serve`
 - Otros modos: `--morning`, `--evening`, `--preview-briefing` (prueba el
-  briefing de IA sin enviarlo a Telegram)
+  briefing de IA sin enviarlo a Telegram), `--preview-partidos` (imprime
+  los bloques de partidos para comprobar que las dos fuentes de TV
+  responden, sin enviar nada)
 - Digest dominical (Blitz Weekend): `python blitzhealth.py`
   (modo `--preview-weekend`: prueba el digest semanal sin enviarlo a
   Telegram, mostrando la puntuación de relevancia de cada artículo)
@@ -37,6 +39,12 @@ Variables de entorno necesarias en local: `TELEGRAM_BOT_TOKEN`,
   vez por semana).
 - El scraping es de HTML, no de APIs oficiales: si un medio cambia su web,
   el parser correspondiente puede romperse y necesitar ajuste.
+- Los partidos salen de dos fuentes distintas: futbolenlatv.es (fútbol,
+  solo la portada: su robots.txt cierra `/baloncesto`) y la guía de
+  programación de Movistar+ (baloncesto de Euroliga y ACB en el dial 7 y
+  en Vamos). Si el baloncesto deja de aparecer, el log dice qué canales
+  devolvió la guía: se corrige añadiendo el nombre a
+  `MOVISTAR_HOME_CHANNEL_NAMES`.
 - El script hace una petición por autor sin concurrencia agresiva, a
   propósito, para ser respetuoso con los servidores.
 
