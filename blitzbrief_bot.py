@@ -306,6 +306,35 @@ DEFAULT_SOURCE_PROFILE: dict[str, object] = {
     "weight": 0.75,
 }
 
+# ── Cobertura por inclinación (estilo Ground News) ────────────────
+# Simplificación de "orientation" en tres cubos para enseñar, bajo cada
+# noticia del briefing, qué medios la llevan en portada. Rojo = izquierda y
+# azul = derecha, como se leen los colores en la política española. Las
+# fuentes que no aparecen aquí (deportivas, tecnológicas) no tienen
+# inclinación política y no se pintan.
+SOURCE_LEANS: dict[str, str] = {
+    "El País": "izquierda",
+    "eldiario.es": "izquierda",
+    "The Guardian": "izquierda",
+    "New York Times": "izquierda",
+    "La Vanguardia": "centro",
+    "Diario Sur": "centro",
+    "La Opinión de Málaga": "centro",
+    "Málaga Hoy": "centro",
+    "El Orden Mundial": "centro",
+    "BBC Mundo": "centro",
+    "France 24 Español": "centro",
+    "ABC": "derecha",
+    "El Español": "derecha",
+    "El Confidencial": "derecha",
+}
+LEAN_ICONS: dict[str, str] = {"izquierda": "🔴", "centro": "⚪", "derecha": "🔵"}
+LEAN_LEGEND = "🔴 izquierda · ⚪ centro · 🔵 derecha"
+COVERAGE_PREFIX = "Cobertura:"
+# Con menos medios no se puede hablar de "punto ciego": que dos periódicos
+# coincidan en una noticia no dice nada del resto.
+MIN_SOURCES_FOR_BLINDSPOT = 3
+
 RSS_FEED_FALLBACKS: dict[str, tuple[str, ...]] = {
     "https://www.error500.net/feed": ("https://www.error500.net/feed.xml",),
 }
@@ -956,7 +985,7 @@ def _filter_ungrounded_tech_section(briefing: str, headlines: list[dict]) -> str
         if line.lstrip().startswith("🤖 Tech:"):
             block_lines = [line]
             next_index = index + 1
-            if next_index < len(lines) and "Por qué importa:" in lines[next_index]:
+            if next_index < len(lines) and COVERAGE_PREFIX in lines[next_index]:
                 block_lines.append(lines[next_index])
                 next_index += 1
 
@@ -978,6 +1007,85 @@ def _filter_ungrounded_tech_section(briefing: str, headlines: list[dict]) -> str
         index += 1
 
     return "\n".join(filtered_lines).strip()
+
+
+# Referencias que Gemini pone al final de cada sección: "[#4, #19]"
+_BRIEFING_REFS_RE = re.compile(r"\s*\[\s*(#?\d+(?:\s*,\s*#?\d+)*)\s*\]\s*$")
+
+
+def _coverage_line(sources: list[str]) -> str:
+    """Agrupa las fuentes por inclinación: '🔴 El País · 🔵 ABC'.
+
+    Devuelve "" si ninguna fuente tiene inclinación política (deporte,
+    tecnología): ahí la línea no aportaría nada.
+    """
+    by_lean: dict[str, list[str]] = {lean: [] for lean in LEAN_ICONS}
+    for source in sources:
+        lean = SOURCE_LEANS.get(source)
+        if lean and source not in by_lean[lean]:
+            by_lean[lean].append(source)
+
+    groups = [
+        f"{LEAN_ICONS[lean]} {', '.join(names)}"
+        for lean, names in by_lean.items()
+        if names
+    ]
+    if not groups:
+        return ""
+    line = " · ".join(groups)
+
+    # Punto ciego: varios medios la destacan, pero ninguno de un lado.
+    left, right = by_lean["izquierda"], by_lean["derecha"]
+    total = sum(len(names) for names in by_lean.values())
+    if total >= MIN_SOURCES_FOR_BLINDSPOT and bool(left) != bool(right):
+        missing = "derechas" if left else "izquierdas"
+        line += f" · ⚠️ Punto ciego: no la destaca la prensa de {missing}"
+    return line
+
+
+def _attach_coverage_lines(briefing: str, headlines: list[dict]) -> str:
+    """Cambia las referencias [#n] de Gemini por una línea de cobertura.
+
+    Gemini solo dice QUÉ titulares de la lista cuentan el mismo hecho; los
+    medios y su inclinación salen de nuestros datos, nunca del modelo, para
+    que no pueda inventarse quién cubre una noticia.
+    """
+    output: list[str] = []
+    any_coverage = False
+    for line in briefing.splitlines():
+        # Formato antiguo: si Gemini lo cuela por inercia, fuera
+        if line.strip().startswith("Por qué importa:"):
+            continue
+        match = _BRIEFING_REFS_RE.search(line)
+        if not match:
+            output.append(line)
+            continue
+
+        clean_line = line[: match.start()].rstrip()
+        output.append(clean_line)
+        # Solo el texto de la noticia, sin la etiqueta "🌍 Internacional:"
+        news_text = clean_line.split(":", 1)[-1]
+
+        sources: list[str] = []
+        for ref in re.findall(r"\d+", match.group(1)):
+            index = int(ref) - 1
+            if not 0 <= index < len(headlines):
+                continue
+            headline = headlines[index]
+            # Si el titular citado no se parece a lo redactado, es una
+            # referencia errónea: mejor sin línea que con medios falsos.
+            if not _briefing_text_matches_headline(news_text, headline):
+                continue
+            sources.extend(headline.get("sources") or [headline.get("source", "")])
+
+        coverage = _coverage_line(sources)
+        if coverage:
+            output.append(f"   {COVERAGE_PREFIX} {coverage}")
+            any_coverage = True
+
+    if any_coverage:
+        output.append(LEAN_LEGEND)
+    return "\n".join(output)
 
 
 def curate_news_headlines(headlines: list[dict], max_items: int = 45) -> list[dict]:
@@ -2726,13 +2834,15 @@ def generate_news_briefing(headlines: list[dict]) -> Optional[str]:
     headlines = [clean_article(h) for h in headlines]
 
     # Preparar los titulares como texto
+    # Cada titular lleva un número (#1, #2...) para que Gemini diga cuáles
+    # ha usado y podamos pintar debajo qué medios cubren la noticia.
     headlines_text = ""
-    for h in headlines:
+    for number, h in enumerate(headlines, start=1):
         sources = ", ".join(h.get("sources") or [h["source"]])
         orientations = ", ".join(h.get("orientations", []))
         score = h.get("importance_score", "")
         why = h.get("why_it_matters", "")
-        headlines_text += f"[{sources}] {h['title']}"
+        headlines_text += f"#{number} [{sources}] {h['title']}"
         if h.get("description"):
             headlines_text += f" — {h['description']}"
         if h.get("published_at"):
@@ -2756,7 +2866,6 @@ ANTI-ALUCINACIÓN (lo más importante):
 - USA EXCLUSIVAMENTE los titulares listados abajo. Si una noticia no aparece literalmente en esa lista, NO LA INCLUYAS.
 - NO uses tu conocimiento previo del mundo, ni hechos que recuerdes, ni contexto histórico, ni sucesos que "podrían" estar pasando.
 - NO inventes nombres, cifras, capturas, dimisiones, victorias, fichajes, lesiones ni detenciones.
-- Esta prohibición aplica a HECHOS. Inferir la relevancia o consecuencia plausible de un titular real SÍ está permitido (ver bloque "POR QUÉ IMPORTA" más abajo).
 - Si una sección no tiene un titular concreto y verificable en la lista, OMÍTELA por completo (no escribas la línea).
 - Antes de redactar cada línea, comprueba mentalmente que cada dato proviene de un titular concreto de la lista.
 - En caso de duda, OMITE la sección. Es mejor un briefing corto que uno con datos inventados.
@@ -2767,35 +2876,22 @@ SELECCIÓN:
 - Usa las señales de prioridad y "criterio de selección" solo para ELEGIR titulares; nunca las copies en el texto.
 - Cuando una noticia tenga varias fuentes, puedes usarlo como señal de relevancia/pluralidad.
 
-POR QUÉ IMPORTA (regla de oro):
-- La línea "Por qué importa" debe responder a UNA de estas preguntas: ¿qué consecuencia tiene?, ¿a quién afecta y cómo?, ¿qué cambia respecto a antes? NUNCA debe repetir ni parafrasear el titular.
-- PROHIBIDO: repetir el titular con otras palabras, añadir solo un detalle más del mismo hecho, o generalidades vacías ("es relevante", "es importante para el sector").
-- Puedes INFERIR la relevancia con sentido común (consecuencias plausibles, a quién afecta), pero SIN añadir hechos nuevos: nada de nombres, cifras, fechas ni sucesos que no estén en el titular.
-- Si no puedes decir nada útil que NO esté ya en el titular, OMITE la línea "Por qué importa" de esa sección (la noticia sola es válida).
+REFERENCIAS (obligatorio en cada sección):
+- Cada titular de la lista empieza por un número (#1, #2...). Al final de cada línea de sección, escribe entre corchetes los números de TODOS los titulares de la lista que cuentan ESE MISMO hecho, empezando por el que has usado para redactar. Ejemplo: [#4, #19, #23]
+- Busca en toda la lista: el mismo hecho suele aparecer en varios medios con palabras distintas. Inclúyelos todos.
+- NO incluyas titulares de hechos solo relacionados (otra noticia del mismo tema, otro día, otra consecuencia).
+- Usa solo números que existan en la lista. Las referencias se procesan aparte: no escribas nada más sobre las fuentes.
 
-EJEMPLOS DE ESTILO (solo ilustran el formato; JAMÁS los incluyas como noticias):
-- MAL:  "El banco central sube los tipos — Por qué importa: Los tipos de interés suben." (repite el titular)
-- BIEN: "El banco central sube los tipos — Por qué importa: Encarece hipotecas y préstamos para las familias."
-- MAL:  "Sale la beta de un sistema operativo — Por qué importa: La beta incluye nuevas funciones." (solo añade detalle)
-- BIEN: "Sale la beta de un sistema operativo — Por qué importa: Cualquiera puede probarla ya antes del lanzamiento oficial."
-
-FORMATO (dos líneas por sección, omite el bloque entero si no hay titular adecuado; la línea "Por qué importa" es opcional y se omite si sería redundante):
-🌍 Internacional: [la noticia internacional más importante hoy]
-   Por qué importa: [frase muy breve]
-🏛 España: [la noticia nacional más relevante hoy]
-   Por qué importa: [frase muy breve]
-💰 Economía: [solo si hay algo económico realmente destacable]
-   Por qué importa: [frase muy breve]
-📍 Málaga/Andalucía: [solo si hay algo local relevante de Málaga o Andalucía]
-   Por qué importa: [frase muy breve]
-⚽ Deporte: [la noticia más importante hoy sobre Real Madrid o Málaga CF: resultado, lesión, fichaje, rueda de prensa, etc.]
-   Por qué importa: [frase muy breve]
-🤖 Tech: [solo si hay un lanzamiento, anuncio o novedad REAL de hoy]
-   Por qué importa: [frase muy breve]
+FORMATO (una línea por sección; omite la sección entera si no hay titular adecuado):
+🌍 Internacional: [la noticia internacional más importante hoy] [#n, #n]
+🏛 España: [la noticia nacional más relevante hoy] [#n]
+💰 Economía: [solo si hay algo económico realmente destacable] [#n]
+📍 Málaga/Andalucía: [solo si hay algo local relevante de Málaga o Andalucía] [#n]
+⚽ Deporte: [la noticia más importante hoy sobre Real Madrid o Málaga CF: resultado, lesión, fichaje, rueda de prensa, etc.] [#n]
+🤖 Tech: [solo si hay un lanzamiento, anuncio o novedad REAL de hoy] [#n]
 
 ESTILO:
 - UNA sola noticia por sección, en UNA frase de máximo 15 palabras que contenga el HECHO concreto (qué pasó y quién). Evita vaguedades tipo "novedades en X" o "polémica por Y" si el titular original da el dato.
-- "Por qué importa" debe tener máximo 18 palabras.
 - Para Tech: ignora noticias sobre productos ya lanzados hace días/semanas. Solo incluye si es algo nuevo de hoy.
 - Para Deporte: incluye cualquier noticia sobre Real Madrid o Málaga CF: resultados, fichajes, crónicas, lesiones, ruedas de prensa, etc. No te limites solo a partidos de hoy.
 - Todo en español.
@@ -2839,6 +2935,7 @@ TITULARES (única fuente válida):
                     if not output_links_allowed(text, [h.get("url", "") for h in headlines]):
                         log.warning("[Briefing] Respuesta descartada: enlace no autorizado.")
                         return None
+                    text = _attach_coverage_lines(text, headlines)
                     return _filter_ungrounded_tech_section(text, headlines)
             log.error(f"[Briefing] Respuesta inesperada de Gemini: {data}")
         except requests.RequestException as e:
@@ -2957,13 +3054,10 @@ def _format_news_briefing_rich_html(
         stripped = line.strip()
         if not stripped:
             return
-        if stripped.startswith("Por qué importa:"):
-            reason = stripped.removeprefix("Por qué importa:").strip()
-            blocks.append(
-                "<blockquote>"
-                f"<b>Por qué importa:</b> {html_escape(reason)}"
-                "</blockquote>"
-            )
+        if stripped.startswith(COVERAGE_PREFIX):
+            # Los iconos y la leyenda ya explican la línea: sin etiqueta
+            coverage = stripped.removeprefix(COVERAGE_PREFIX).strip()
+            blocks.append(f"<blockquote>{html_escape(coverage)}</blockquote>")
             return
         if ":" in stripped and not stripped.startswith("http"):
             title, body = stripped.split(":", 1)
@@ -3002,12 +3096,9 @@ def _format_news_briefing_html(
     for line in text.splitlines():
         stripped = line.lstrip()
         indent = line[: len(line) - len(stripped)]
-        if stripped.startswith("Por qué importa:"):
-            reason = stripped.removeprefix("Por qué importa:").strip()
-            formatted_lines.append(
-                f"{html_escape(indent)}↳ <b>Por qué importa:</b> "
-                f"{html_escape(reason)}"
-            )
+        if stripped.startswith(COVERAGE_PREFIX):
+            coverage = stripped.removeprefix(COVERAGE_PREFIX).strip()
+            formatted_lines.append(f"{html_escape(indent)}↳ {html_escape(coverage)}")
         else:
             formatted_lines.append(html_escape(line))
     return "\n".join(formatted_lines)

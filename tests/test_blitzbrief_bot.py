@@ -760,7 +760,7 @@ class BlitzBriefTests(unittest.TestCase):
         self.assertIn("prioridad: 2.0", captured["prompt"])
         self.assertIn("ABC, El País", captured["prompt"])
 
-    def test_generate_news_briefing_prompt_defines_por_que_importa(self):
+    def test_generate_news_briefing_prompt_numbers_headlines_and_asks_for_refs(self):
         captured = {}
 
         class FakeResponse:
@@ -788,8 +788,9 @@ class BlitzBriefTests(unittest.TestCase):
              patch.object(bot.requests, "post", side_effect=fake_post):
             bot.generate_news_briefing([headline])
 
-        self.assertIn("NUNCA debe repetir ni parafrasear el titular", captured["prompt"])
-        self.assertIn("OMITE la línea", captured["prompt"])
+        self.assertIn("#1 [ABC] El Gobierno aprueba una nueva ley", captured["prompt"])
+        self.assertIn("REFERENCIAS", captured["prompt"])
+        self.assertNotIn("Por qué importa", captured["prompt"])
 
     def test_generate_news_briefing_prompt_marks_selection_signal_as_not_copyable(self):
         captured = {}
@@ -836,10 +837,8 @@ class BlitzBriefTests(unittest.TestCase):
                                 "parts": [
                                     {
                                         "text": (
-                                            "🏛 España: El Gobierno aprueba una nueva ley.\n"
-                                            "   Por qué importa: Afecta a la vivienda.\n"
-                                            "🤖 Tech: Google lanza Gemma 4 12B para laptops.\n"
-                                            "   Por qué importa: Lleva IA local a portátiles."
+                                            "🏛 España: El Gobierno aprueba una nueva ley. [#1]\n"
+                                            "🤖 Tech: Google lanza Gemma 4 12B para laptops. [#1]"
                                         )
                                     }
                                 ]
@@ -878,8 +877,7 @@ class BlitzBriefTests(unittest.TestCase):
                                 "parts": [
                                     {
                                         "text": (
-                                            "🤖 Tech: OpenAI presenta mejoras para ChatGPT.\n"
-                                            "   Por qué importa: Cambia flujos de trabajo con IA."
+                                            "🤖 Tech: OpenAI presenta mejoras para ChatGPT. [#1]"
                                         )
                                     }
                                 ]
@@ -935,47 +933,126 @@ class BlitzBriefTests(unittest.TestCase):
         self.assertNotIn("key=", captured["url"])
         self.assertEqual(captured["headers"]["x-goog-api-key"], "key")
 
-    def test_news_briefing_html_highlights_why_it_matters(self):
+    def test_news_briefing_html_renders_coverage_line(self):
         html = bot._format_news_briefing_html(
             "📰 BRIEFING",
-            "🌍 Internacional: Test\n   Por qué importa: Afecta a <mercados>.",
+            "🌍 Internacional: Test\n   Cobertura: 🔴 El País · 🔵 <ABC>",
         )
 
-        self.assertIn("↳ <b>Por qué importa:</b> Afecta a", html)
-        self.assertIn("&lt;mercados&gt;.", html)
+        self.assertIn("↳ 🔴 El País · 🔵 &lt;ABC&gt;", html)
+        self.assertNotIn("Cobertura:", html)
 
     def test_news_briefing_rich_html_uses_structured_blocks(self):
         html = bot._format_news_briefing_rich_html(
             "📰 BRIEFING",
-            "🌍 Internacional: Test\n   Por qué importa: Afecta a <mercados>.",
+            "🌍 Internacional: Test\n   Cobertura: 🔴 El País · 🔵 <ABC>",
             "\n\n📅 PRÓXIMOS PARTIDOS:\nReal Madrid - Málaga",
         )
 
         self.assertIn("<h1>📰 BRIEFING</h1>", html)
         self.assertIn("<h2>🌍 Internacional</h2>", html)
         self.assertIn("<p>Test</p>", html)
-        self.assertIn("<blockquote><b>Por qué importa:</b> Afecta a &lt;mercados&gt;.</blockquote>", html)
+        self.assertIn("<blockquote>🔴 El País · 🔵 &lt;ABC&gt;</blockquote>", html)
         self.assertIn("<details open><summary>Próximos partidos</summary><ul>", html)
         self.assertIn("<li>Real Madrid - Málaga</li>", html)
 
-    def test_news_briefing_html_renders_section_without_why_it_matters(self):
+    def test_news_briefing_html_renders_section_without_coverage(self):
         html = bot._format_news_briefing_html(
             "📰 BRIEFING",
-            "🌍 Internacional: Test sin línea de por qué importa",
+            "🌍 Internacional: Test sin línea de cobertura",
         )
 
-        self.assertIn("Test sin línea de por qué importa", html)
-        self.assertNotIn("Por qué importa", html)
+        self.assertIn("Test sin línea de cobertura", html)
+        self.assertNotIn("↳", html)
 
-    def test_news_briefing_rich_html_renders_section_without_why_it_matters(self):
+    def test_news_briefing_rich_html_renders_section_without_coverage(self):
         html = bot._format_news_briefing_rich_html(
             "📰 BRIEFING",
-            "🌍 Internacional: Test sin línea de por qué importa",
+            "🌍 Internacional: Test sin línea de cobertura",
         )
 
         self.assertIn("<h2>🌍 Internacional</h2>", html)
-        self.assertIn("<p>Test sin línea de por qué importa</p>", html)
+        self.assertIn("<p>Test sin línea de cobertura</p>", html)
         self.assertNotIn("<blockquote>", html)
+
+    def test_coverage_line_groups_sources_by_lean(self):
+        line = bot._coverage_line(["ABC", "El País", "La Vanguardia", "eldiario.es"])
+
+        self.assertEqual(line, "🔴 El País, eldiario.es · ⚪ La Vanguardia · 🔵 ABC")
+
+    def test_coverage_line_flags_blindspot_when_one_side_is_missing(self):
+        line = bot._coverage_line(["El País", "eldiario.es", "The Guardian"])
+
+        self.assertIn("Punto ciego: no la destaca la prensa de derechas", line)
+
+    def test_coverage_line_needs_enough_sources_for_blindspot(self):
+        line = bot._coverage_line(["ABC", "El Español"])
+
+        self.assertEqual(line, "🔵 ABC, El Español")
+
+    def test_coverage_line_is_empty_for_sources_without_lean(self):
+        self.assertEqual(bot._coverage_line(["Marca Real Madrid", "OpenAI Blog"]), "")
+
+    def test_attach_coverage_lines_replaces_refs_with_sources(self):
+        headlines = [
+            {
+                "source": "El País",
+                "sources": ["El País"],
+                "title": "Estados Unidos propone a la ONU avalar la autonomía del Sáhara",
+                "description": "",
+            },
+            {
+                "source": "Marca",
+                "sources": ["Marca"],
+                "title": "El Real Madrid gana al Fenerbahce",
+                "description": "",
+            },
+            {
+                "source": "ABC",
+                "sources": ["ABC", "El Español"],
+                "title": "EE UU pide a la ONU respaldar el plan marroquí de autonomía para el Sáhara",
+                "description": "",
+            },
+        ]
+        briefing = (
+            "🌍 Internacional: Estados Unidos propone a la ONU avalar "
+            "la autonomía marroquí del Sáhara [#1, #3]"
+        )
+
+        result = bot._attach_coverage_lines(briefing, headlines)
+
+        self.assertEqual(
+            result.splitlines(),
+            [
+                "🌍 Internacional: Estados Unidos propone a la ONU avalar "
+                "la autonomía marroquí del Sáhara",
+                "   Cobertura: 🔴 El País · 🔵 ABC, El Español",
+                bot.LEAN_LEGEND,
+            ],
+        )
+
+    def test_attach_coverage_lines_ignores_unrelated_or_unknown_refs(self):
+        headlines = [
+            {
+                "source": "El País",
+                "sources": ["El País"],
+                "title": "El Real Madrid gana al Fenerbahce en la Euroliga",
+                "description": "",
+            },
+        ]
+        briefing = (
+            "🌍 Internacional: Estados Unidos propone a la ONU avalar "
+            "la autonomía del Sáhara [#1, #7]\n"
+            "   Por qué importa: Cambia el conflicto."
+        )
+
+        result = bot._attach_coverage_lines(briefing, headlines)
+
+        self.assertEqual(
+            result,
+            "🌍 Internacional: Estados Unidos propone a la ONU avalar "
+            "la autonomía del Sáhara",
+        )
 
     def test_preview_news_briefing_does_not_send_to_telegram(self):
         headline = {
