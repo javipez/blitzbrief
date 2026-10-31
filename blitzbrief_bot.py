@@ -42,6 +42,7 @@ from typing import Callable, Optional
 from zoneinfo import ZoneInfo
 
 import requests
+from cli_options import reject_unknown_options
 from content_security import (
     GEMINI_SYSTEM_INSTRUCTION, SecretRedactionFilter, clean_article, output_links_allowed,
     visible_soup, visible_text,
@@ -505,9 +506,43 @@ FUTBOL_EN_LA_TV_URL = "https://www.futbolenlatv.es/"
 # jugarse, que cansa más de lo que avisa.
 FIXTURES_LOOKAHEAD_DAYS = 1
 
-# Canal 7 de Movistar+, incluido en la suscripción básica: emite un partido
-# destacado de Premier, Serie A, Bundesliga o LaLiga casi cada jornada.
-MOVISTAR_PLUS_PATTERN = re.compile(r"Movistar Plus\+\s*\(M7\)", re.IGNORECASE)
+# Dónde se puede ver cada cosa, que es lo que de verdad se quiere saber
+# por la mañana. Tres casos:
+#
+#  1. En la tele del salón: el dial 7, Vamos (dial 8) y DAZN, que tiene
+#     su propia app en el Apple TV.
+#  2. Solo en el Mac: los canales de LaLiga y de Champions de Movistar,
+#     que no llegan al descodificador y hay que verlos por web.
+#  3. Ni idea: cualquier otro canal, que se deja sin marca.
+#
+# Los paréntesis de `\(m7\)` son obligatorios a propósito: sin ellos,
+# "DAZN 1 (M72)" se colaría como si fuera el canal 7.
+# `vamos\b(?!\s*\d)` deja fuera "M+ Vamos 3 (53)", que es otro canal (los
+# Vamos numerados van por los diales 51-53) y no se ve con esta suscripción.
+# "M+ Vamos (8 y 50)" sí pasa: ahí el número viene después del paréntesis.
+TV_CHANNEL_PATTERN = re.compile(
+    r"\(\s*m7\s*\)|\bvamos\b(?!\s*\d)|\bdazn\b", re.IGNORECASE
+)
+LAPTOP_CHANNEL_PATTERN = re.compile(
+    r"laliga|liga de campeones|champions", re.IGNORECASE
+)
+
+TV_MARK = "✅"        # lo ves en la tele
+LAPTOP_MARK = "💻"    # toca el Mac
+
+# DAZN se ve en su app, así que sus diales en Movistar u Orange sobran:
+# "DAZN LaLiga (M55 O113)" se queda en "DAZN LaLiga".
+# Los diales llegan en formatos variados: "(M55 O113)", "(53)", "(8 y 50)".
+DAZN_PATTERN = re.compile(r"\bdazn\b", re.IGNORECASE)
+TV_DIAL_PATTERN = re.compile(
+    r"\s*\(\s*[MO]?\d+(?:\s*(?:y\s*)?[MO]?\d+)*\s*\)", re.IGNORECASE
+)
+
+# De esos tres, los dos que entran en la cuota básica de Movistar+ y que
+# por eso merecen bloque propio: el 7 y Vamos.
+MOVISTAR_BASIC_PATTERN = re.compile(
+    r"\(\s*m7\s*\)|\bvamos\b(?!\s*\d)", re.IGNORECASE
+)
 
 # Canales que no aportan nada en un aviso doméstico
 IGNORED_TV_CHANNELS: tuple[str, ...] = ("laliga tv bar", "ver en directo")
@@ -526,6 +561,58 @@ YOUTH_COMPETITION_PATTERN = re.compile(
     r"\b(?:juvenil\w*|cadete\w*|infantil\w*|alevin\w*|"
     r"benjamin\w*|prebenjamin\w*|youth|cantera|"
     r"sub[\s-]?\d{1,2}|u[\s-]?\d{1,2})\b"
+)
+
+# ── Baloncesto en el 7 y en Vamos ──────────────────────────────────
+# futbolenlatv solo cubre fútbol y su robots.txt cierra /baloncesto, así
+# que para la Euroliga y la ACB se consulta la guía de programación de
+# Movistar+: es la fuente de quien emite.
+#
+# Es la API JSON con la que la propia web de Movistar+ pinta su parrilla
+# (sin clave ni registro). No está documentada oficialmente; la referencia
+# es el proyecto github.com/Proyectos-Cantelar/guia-tv, que la usa a diario.
+# Funciona en dos pasos: primero la lista de canales (para saber qué
+# código interno tienen el dial 7 y el 8) y luego la parrilla de cada uno.
+MOVISTAR_OTT_URL = "https://ottcache.dof6.com/movistarplus/webplayer/OTT"
+MOVISTAR_OTT_PARAMS: dict[str, str] = {
+    "version": "8",
+    "mdrm": "true",
+    "tlsstream": "true",
+    "demarcation": "18",
+}
+# Sin el Referer de su propia web la API puede negarse a responder
+MOVISTAR_OTT_HEADERS: dict[str, str] = {
+    "User-Agent": USER_AGENT,
+    "Referer": "https://www.movistarplus.es/programacion-tv",
+    "Accept": "application/json, text/plain, */*",
+    "Accept-Language": "es-ES,es;q=0.9",
+}
+
+# Los canales se identifican por su dial, que es justo lo que se marca en
+# el mando: más fiable que su nombre, que Movistar cambia cada pocos años.
+MOVISTAR_BASIC_DIALS: dict[int, str] = {
+    7: "Movistar Plus+ (M7)",
+    8: "Vamos (M8)",
+}
+
+# Solo interesan Euroliga y ACB. Se busca en el título y en el subtítulo
+# del programa juntos, porque la guía suele repartir la competición y el
+# partido entre los dos ("Euroliga" + "Real Madrid - Baskonia").
+BASKETBALL_COMPETITION_PATTERN = re.compile(
+    r"euroliga|euroleague|\bacb\b|liga endesa", re.IGNORECASE
+)
+
+# La guía no distingue directo de diferido, y por las mañanas Vamos repite
+# partidos de días anteriores. Como la Euroliga y la ACB casi nunca juegan
+# antes del mediodía, lo que empiece antes de esta hora se da por diferido.
+BASKETBALL_EARLIEST_LIVE_HOUR = 12
+
+# Alrededor de cada partido hay previas, resúmenes y tertulias. Interesa
+# el partido, no el programa de estudio que lo rodea.
+BASKETBALL_STUDIO_PATTERN = re.compile(
+    r"resumen|previa|previo|post?partido|magazine|magacin|tertulia|"
+    r"highlights|lo mejor",
+    re.IGNORECASE,
 )
 
 # ── Entrenos del box de CrossFit (Box Olimpo) ─────────────────────
@@ -2352,6 +2439,10 @@ def _clean_tv_channel(raw: str) -> str:
     """Normaliza el nombre de un canal tal como lo publica futbolenlatv."""
     channel = raw.split(":")[0].strip()
     channel = re.sub(r"\s+", " ", channel)
+    # Los diales solo sirven para sintonizar en el descodificador. En DAZN
+    # se entra por su app, así que ahí el dial es ruido.
+    if DAZN_PATTERN.search(channel):
+        channel = TV_DIAL_PATTERN.sub("", channel).strip()
     return channel
 
 
@@ -2452,9 +2543,32 @@ def _fixture_day_label(match_local: datetime, today: date) -> str:
     return f"{weekdays[match_local.weekday()]} {match_local.day}"
 
 
+def _is_basic_channel(channel: str) -> bool:
+    """¿El canal entra en la cuota básica de Movistar+ (dial 7 o Vamos)?"""
+    return bool(MOVISTAR_BASIC_PATTERN.search(channel))
+
+
+def _channel_access_mark(channels: list[str]) -> str:
+    """Marca de dónde se puede ver un partido, según sus canales.
+
+    El orden importa: si está en la tele da igual que también lo den en
+    un canal que solo se ve en el Mac.
+    """
+    if any(TV_CHANNEL_PATTERN.search(channel) for channel in channels):
+        return TV_MARK
+    if any(LAPTOP_CHANNEL_PATTERN.search(channel) for channel in channels):
+        return LAPTOP_MARK
+    return ""
+
+
 def _format_fixture_line(match: dict, match_local: datetime, today: date) -> str:
     channels = match["channels"][:MAX_TV_CHANNELS_PER_MATCH]
     channel_str = f" — {', '.join(channels)}" if channels else ""
+    # La marca se decide mirando TODOS los canales, no solo los que caben
+    # en la línea: dónde se puede ver es lo primero que se quiere saber.
+    mark = _channel_access_mark(match["channels"])
+    if mark:
+        channel_str += f" {mark}"
     competition = f" ({match['competition']})" if match["competition"] else ""
     return (
         f"⚽ {_fixture_day_label(match_local, today)} {match_local:%H:%M} — "
@@ -2462,27 +2576,33 @@ def _format_fixture_line(match: dict, match_local: datetime, today: date) -> str
     )
 
 
+def _is_followed_fixture(match: dict) -> bool:
+    """¿Es el primer equipo masculino de uno de los equipos seguidos?"""
+    followed = {_normalize_text(t) for t in FOLLOWED_FOOTBALL_TEAMS}
+    # Comparar equipos completos evita confundir Real Madrid con su C,
+    # Castilla, femenino o juveniles. La competición cubre nombres ambiguos.
+    teams = {_normalize_text(match["home"]), _normalize_text(match["away"])}
+    if not followed.intersection(teams):
+        return False
+    category = _normalize_text(
+        f"{match['competition']} {match['home']} {match['away']}"
+    )
+    if any(word in category for word in EXCLUDED_COMPETITION_KEYWORDS):
+        return False
+    return not YOUTH_COMPETITION_PATTERN.search(category)
+
+
 def fetch_upcoming_fixtures(matches: Optional[list[dict]] = None) -> list[str]:
     """Partidos de hoy y mañana de los equipos seguidos, con canal y dial."""
     tz_madrid = ZoneInfo("Europe/Madrid")
     now = datetime.now(tz_madrid)
-    followed = {_normalize_text(t) for t in FOLLOWED_FOOTBALL_TEAMS}
 
     if matches is None:
         matches = _fetch_tv_matches()
 
     selected: list[tuple[datetime, str]] = []
     for match in matches:
-        # Comparar equipos completos evita confundir Real Madrid con su C,
-        # Castilla, femenino o juveniles. La competición cubre nombres ambiguos.
-        teams = {_normalize_text(match["home"]), _normalize_text(match["away"])}
-        if not followed.intersection(teams):
-            continue
-        category = _normalize_text(
-            f"{match['competition']} {match['home']} {match['away']}"
-        )
-        if (any(word in category for word in EXCLUDED_COMPETITION_KEYWORDS)
-                or YOUTH_COMPETITION_PATTERN.search(category)):
+        if not _is_followed_fixture(match):
             continue
         match_local = match["kickoff"].astimezone(tz_madrid)
         if not _within_lookahead(match_local, now):
@@ -2497,35 +2617,212 @@ def fetch_upcoming_fixtures(matches: Optional[list[dict]] = None) -> list[str]:
     return lines
 
 
-def fetch_movistar_plus_highlights(
-    matches: Optional[list[dict]] = None,
-) -> list[str]:
-    """Lo que emite hoy y mañana el canal 7, incluido en la cuota básica."""
-    tz_madrid = ZoneInfo("Europe/Madrid")
-    now = datetime.now(tz_madrid)
+def _basic_football_entries(
+    matches: list[dict], now: datetime
+) -> list[tuple[datetime, str]]:
+    """Fútbol de hoy y mañana en el dial 7 o en Vamos, sea de quien sea.
 
-    if matches is None:
-        matches = _fetch_tv_matches()
-
-    selected: list[tuple[datetime, str]] = []
+    Devuelve pares (hora, línea) en vez de solo texto para poder mezclarlo
+    después con el baloncesto y ordenarlo todo junto por hora real.
+    """
+    entries: list[tuple[datetime, str]] = []
     for match in matches:
-        if not any(MOVISTAR_PLUS_PATTERN.search(c) for c in match["channels"]):
+        basic_channels = [c for c in match["channels"] if _is_basic_channel(c)]
+        if not basic_channels:
             continue
-        match_local = match["kickoff"].astimezone(tz_madrid)
+        match_local = match["kickoff"].astimezone(now.tzinfo)
         if not _within_lookahead(match_local, now):
             continue
         competition = f" ({match['competition']})" if match["competition"] else ""
-        selected.append((
+        entries.append((
             match_local,
-            f"📺 {_fixture_day_label(match_local, now.date())} "
+            f"⚽ {_fixture_day_label(match_local, now.date())} "
             f"{match_local:%H:%M} — {match['home']} vs {match['away']}"
-            f"{competition}",
+            f"{competition} — {basic_channels[0]}",
         ))
+    return entries
 
-    selected.sort(key=lambda pair: pair[0])
-    lines = [line for _, line in selected]
-    log.info(f"[Fixtures] Destacados en Movistar Plus+: {len(lines)}")
+
+def fetch_basic_football_highlights(
+    matches: Optional[list[dict]] = None,
+) -> list[str]:
+    """Lo que dan hoy y mañana en el 7 o en Vamos, listo para el mensaje."""
+    now = datetime.now(ZoneInfo("Europe/Madrid"))
+    if matches is None:
+        matches = _fetch_tv_matches()
+
+    entries = sorted(_basic_football_entries(matches, now), key=lambda e: e[0])
+    lines = [line for _, line in entries]
+    log.info(f"[Fixtures] Fútbol en el 7/Vamos: {len(lines)}")
     return lines
+
+
+# ── Baloncesto: Euroliga y ACB en el 7 o en Vamos ──────────────────
+
+
+def _fetch_movistar_json(path: str, **params):
+    """GET a la API de la guía de Movistar+. Devuelve el JSON o None si falla."""
+    try:
+        resp = requests.get(
+            f"{MOVISTAR_OTT_URL}/{path}",
+            params={**params, **MOVISTAR_OTT_PARAMS},
+            headers=MOVISTAR_OTT_HEADERS,
+            timeout=15,
+        )
+        resp.raise_for_status()
+        return resp.json()
+    except (requests.RequestException, ValueError) as e:
+        log.warning(f"[Baloncesto] Error al consultar '{path}' en Movistar+: {e}")
+        return None
+
+
+def _movistar_basic_channels() -> dict[str, str]:
+    """Código interno de los canales del dial 7 y 8 → cómo los enseñamos.
+
+    La parrilla se pide por código de canal ("CodCadenaTv"), que no es
+    algo que sepamos de memoria. Lo sacamos de la lista de canales buscando
+    el que ocupa cada dial.
+    """
+    channels = _fetch_movistar_json("contents/channels")
+    if not isinstance(channels, list):
+        return {}
+
+    found: dict[int, tuple[str, str]] = {}
+    for channel in channels:
+        if not isinstance(channel, dict):
+            continue
+        try:
+            dial = int(channel.get("Dial"))
+        except (TypeError, ValueError):
+            continue
+        code = channel.get("CodCadenaTv")
+        # Si hubiese dos canales en el mismo dial (HD y SD, por ejemplo),
+        # con el primero basta: emiten lo mismo.
+        if dial in MOVISTAR_BASIC_DIALS and code and dial not in found:
+            found[dial] = (code, MOVISTAR_BASIC_DIALS[dial])
+
+    missing = sorted(set(MOVISTAR_BASIC_DIALS) - set(found))
+    if missing:
+        log.warning(
+            f"[Baloncesto] La lista de Movistar+ no trae los diales {missing}"
+        )
+    return {code: label for code, label in found.values()}
+
+
+def _epg_title(programme: dict) -> str:
+    """Título + subtítulo del programa, sin repetir lo que ya diga el título.
+
+    La guía suele poner la competición en "Titulo" y el partido en
+    "TituloEpisodio"; juntos quedan "Euroliga. Real Madrid - Baskonia".
+    """
+    title = (programme.get("Titulo") or "").strip()
+    episode = (programme.get("TituloEpisodio") or "").replace('"', "").strip()
+    if episode and _normalize_text(episode) not in _normalize_text(title):
+        return f"{title}. {episode}" if title else episode
+    return title
+
+
+def _fetch_epg_day(code: str, label: str, day: date) -> list[dict]:
+    """Programas de un canal en un día, con la hora ya en Madrid."""
+    data = _fetch_movistar_json(
+        "epg",
+        **{"from": f"{day.isoformat()}T00:00:00", "span": "1", "channel": code},
+    )
+    if not isinstance(data, list):
+        return []
+
+    tz_madrid = ZoneInfo("Europe/Madrid")
+    programmes: list[dict] = []
+    for programme in data:
+        if not isinstance(programme, dict):
+            continue
+        title = _epg_title(programme)
+        try:
+            # La hora viene en milisegundos desde 1970 (epoch), no en texto
+            start = datetime.fromtimestamp(
+                int(programme["FechaHoraInicio"]) / 1000, tz_madrid
+            )
+        except (KeyError, TypeError, ValueError):
+            continue
+        if title:
+            programmes.append({"channel": label, "title": title, "start": start})
+    return programmes
+
+
+def _clean_basketball_title(title: str) -> str:
+    """Quita el prefijo de género: 'Baloncesto: Euroliga. X - Y' → 'Euroliga. X - Y'."""
+    cleaned = re.sub(r"^\s*baloncesto\s*[:.-]\s*", "", title, flags=re.IGNORECASE)
+    return " ".join(cleaned.split())
+
+
+def _basic_basketball_entries(
+    now: datetime, programmes: Optional[list[dict]] = None
+) -> list[tuple[datetime, str]]:
+    """Euroliga y ACB de hoy y mañana en el 7 o en Vamos.
+
+    Son cinco peticiones al día: la lista de canales y la parrilla de hoy
+    y de mañana de cada uno de los dos.
+    """
+    if programmes is None:
+        programmes = []
+        for code, label in _movistar_basic_channels().items():
+            for days_ahead in range(FIXTURES_LOOKAHEAD_DAYS + 1):
+                day = now.date() + timedelta(days=days_ahead)
+                programmes.extend(_fetch_epg_day(code, label, day))
+
+    entries: list[tuple[datetime, str]] = []
+    seen: set[tuple[str, datetime]] = set()
+
+    for programme in programmes:
+        title = programme["title"]
+        if not BASKETBALL_COMPETITION_PATTERN.search(title):
+            continue
+        if BASKETBALL_STUDIO_PATTERN.search(title):
+            continue
+        start = programme["start"]
+        if start.hour < BASKETBALL_EARLIEST_LIVE_HOUR:
+            continue
+        if not _within_lookahead(start, now):
+            continue
+        # El mismo partido puede salir dos veces: si lo dan en los dos
+        # canales, o si cruza la medianoche y aparece en la parrilla de
+        # ambos días.
+        key = (_normalize_text(title), start)
+        if key in seen:
+            continue
+        seen.add(key)
+        entries.append((
+            start,
+            f"🏀 {_fixture_day_label(start, now.date())} {start:%H:%M} — "
+            f"{_clean_basketball_title(title)} — {programme['channel']}",
+        ))
+    return entries
+
+
+def fetch_basic_basketball(programmes: Optional[list[dict]] = None) -> list[str]:
+    """Baloncesto de hoy y mañana que se puede ver con la suscripción."""
+    now = datetime.now(ZoneInfo("Europe/Madrid"))
+    entries = sorted(_basic_basketball_entries(now, programmes), key=lambda e: e[0])
+    lines = [line for _, line in entries]
+    log.info(f"[Baloncesto] Euroliga/ACB en el 7/Vamos: {len(lines)}")
+    return lines
+
+
+def fetch_basic_tv_lineup(matches: Optional[list[dict]] = None) -> list[str]:
+    """Todo lo del 7 y de Vamos —fútbol y baloncesto— ordenado por hora.
+
+    Los partidos de tus equipos se dejan fuera: ya salen en el bloque de
+    arriba, con su marca de dónde verlos. Repetirlos solo alargaría el
+    mensaje de la mañana.
+    """
+    now = datetime.now(ZoneInfo("Europe/Madrid"))
+    if matches is None:
+        matches = _fetch_tv_matches()
+
+    others = [match for match in matches if not _is_followed_fixture(match)]
+    entries = _basic_football_entries(others, now) + _basic_basketball_entries(now)
+    entries.sort(key=lambda pair: pair[0])
+    return [line for _, line in entries]
 
 
 # ── Meteorología ────────────────────────────────────────────────────
@@ -3202,21 +3499,11 @@ def send_news_briefing() -> bool:
         briefing = "\n".join(lines[2:])   # el header ya va aparte
         header = lines[0]
 
-    # Próximos partidos y destacados de Movistar+ (una sola descarga)
-    tv_matches = _fetch_tv_matches()
-    fixtures = fetch_upcoming_fixtures(tv_matches)
-    fixtures_section = ""
-    if fixtures:
-        fixtures_section = "\n\n📅 PRÓXIMOS PARTIDOS:\n" + "\n".join(fixtures)
-
-    highlights = fetch_movistar_plus_highlights(tv_matches)
-    if highlights:
-        fixtures_section += (
-            "\n\n📺 EN MOVISTAR PLUS+ (M7):\n" + "\n".join(highlights)
-        )
+    fixture_groups = build_fixture_groups()
+    fixtures_section = _fixture_groups_to_text(fixture_groups)
 
     message = f"{header}\n\n{briefing}{fixtures_section}"
-    rich_message = _format_news_briefing_rich_html(header, briefing, fixtures_section)
+    rich_message = _format_news_briefing_rich_html(header, briefing, fixture_groups)
     html_message = _format_news_briefing_html(header, briefing, fixtures_section)
     success = _send_rich_html_message(
         rich_message,
@@ -3265,8 +3552,59 @@ def preview_news_briefing() -> None:
     print(f"{header}\n\n{briefing}")
 
 
+def preview_fixtures() -> None:
+    """Imprime los bloques de partidos sin enviar nada a Telegram.
+
+    Sirve para comprobar en el VPS que las dos fuentes (futbolenlatv para
+    el fútbol y la guía de Movistar+ para el baloncesto) siguen
+    respondiendo, sin tener que esperar al briefing de la mañana.
+    """
+    groups = build_fixture_groups()
+    if not groups:
+        print("No hay partidos que avisar hoy ni mañana.")
+        print("Si esperabas alguno, mira los avisos del log de arriba.")
+        return
+    for emoji, title, lines in groups:
+        print(f"\n{emoji} {title.upper()}:")
+        for line in lines:
+            print(line)
+
+
+def build_fixture_groups() -> list[tuple[str, str, list[str]]]:
+    """Los bloques de partidos del briefing: (emoji, título, líneas).
+
+    Son dos y responden a dos preguntas distintas: "¿cuándo juegan los
+    míos?" y "¿qué puedo ver esta noche sin pagar nada extra?". Van por
+    separado porque un partido puede estar en los dos (y así se ve).
+    """
+    tv_matches = _fetch_tv_matches()   # una sola descarga para ambos bloques
+    groups: list[tuple[str, str, list[str]]] = []
+
+    fixtures = fetch_upcoming_fixtures(tv_matches)
+    if fixtures:
+        groups.append(("📅", "Próximos partidos", fixtures))
+
+    basic_tv = fetch_basic_tv_lineup(tv_matches)
+    if basic_tv:
+        groups.append(("📺", "También en el 7 y en Vamos", basic_tv))
+
+    return groups
+
+
+def _fixture_groups_to_text(
+    groups: list[tuple[str, str, list[str]]]
+) -> str:
+    """Los bloques como texto plano, tal cual se envían a Telegram."""
+    return "".join(
+        f"\n\n{emoji} {title.upper()}:\n" + "\n".join(lines)
+        for emoji, title, lines in groups
+    )
+
+
 def _format_news_briefing_rich_html(
-    header: str, briefing: str, fixtures_section: str = ""
+    header: str,
+    briefing: str,
+    fixture_groups: Optional[list[tuple[str, str, list[str]]]] = None,
 ) -> str:
     """Formatea el briefing con bloques Rich Message de Telegram."""
     blocks = [f"<h1>{html_escape(header)}</h1>"]
@@ -3291,18 +3629,16 @@ def _format_news_briefing_rich_html(
     for line in briefing.splitlines():
         append_briefing_line(line)
 
-    fixture_lines = [
-        line.strip()
-        for line in fixtures_section.splitlines()
-        if line.strip()
-        and "PRÓXIMOS PARTIDOS" not in line
-        and "MOVISTAR PLUS+" not in line
-    ]
-    if fixture_lines:
+    # Cada bloque va en su propio desplegable, con su título como resumen.
+    for _emoji, title, lines in fixture_groups or []:
+        if not lines:
+            continue
         blocks.append("<hr/>")
-        blocks.append("<details open><summary>Próximos partidos</summary><ul>")
-        for fixture in fixture_lines:
-            blocks.append(f"<li>{html_escape(fixture)}</li>")
+        blocks.append(
+            f"<details open><summary>{html_escape(title)}</summary><ul>"
+        )
+        for line in lines:
+            blocks.append(f"<li>{html_escape(line.strip())}</li>")
         blocks.append("</ul></details>")
 
     return "\n".join(blocks)
@@ -3916,7 +4252,9 @@ def run_weekend_digest() -> bool:
         return False
 
     try:
-        blitzhealth.main()
+        # Lista vacía a propósito: las opciones del bot (`--serve`) no son
+        # del Blitz Weekend, y aquí siempre se quiere el envío normal.
+        blitzhealth.main([])
     except SystemExit:
         # blitzhealth corta con sys.exit(1) cuando no hay contenido o Gemini
         # falla, y en esos casos ya ha avisado por Telegram por su cuenta.
@@ -4192,19 +4530,25 @@ def serve() -> None:
 
 
 def main():
+    # Opción → qué hace. Si llegan varias, gana la primera de esta lista.
+    # Sin ninguna se lanza el digest completo.
+    modes: dict[str, Callable[[], None]] = {
+        "--serve": serve,
+        "--register-commands": register_bot_commands,
+        "--evening": lambda: run_digest(notify_empty=True, mode="evening"),
+        "--morning": lambda: run_digest(mode="morning"),
+        "--preview-briefing": preview_news_briefing,
+        "--preview-partidos": preview_fixtures,
+    }
+    # Antes de nada: una opción mal escrita no debe acabar en un envío real
+    reject_unknown_options(modes, sys.argv[1:])
+
     load_authors()
-    if "--serve" in sys.argv:
-        serve()
-    elif "--register-commands" in sys.argv:
-        register_bot_commands()
-    elif "--evening" in sys.argv:
-        run_digest(notify_empty=True, mode="evening")
-    elif "--morning" in sys.argv:
-        run_digest(mode="morning")
-    elif "--preview-briefing" in sys.argv:
-        preview_news_briefing()
-    else:
-        run_digest(notify_empty=True, mode="full")
+    for option, run in modes.items():
+        if option in sys.argv:
+            run()
+            return
+    run_digest(notify_empty=True, mode="full")
 
 
 if __name__ == "__main__":
