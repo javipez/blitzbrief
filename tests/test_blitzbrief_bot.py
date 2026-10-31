@@ -1123,11 +1123,12 @@ class BlitzBriefTests(unittest.TestCase):
 
         self.assertEqual(line, "6 medios: 🔴 3 · ⚪ 1 · 🔵 2")
 
-    def test_coverage_candidates_keep_best_match_per_new_source(self):
+    def test_coverage_candidates_rank_best_match_of_each_new_source_first(self):
         news = "Estados Unidos propone a la ONU avalar la autonomía del Sáhara"
         pool = [
             {"source": "El Mundo", "title": "La ONU debate el Sáhara", "description": ""},
             {"source": "El Mundo", "title": "EE UU lleva a la ONU la autonomía del Sáhara", "description": ""},
+            {"source": "ABC", "title": "La ONU decide sobre el Sáhara", "description": ""},
             {"source": "El País", "title": "La ONU y la autonomía del Sáhara", "description": ""},
             {"source": "RTVE", "title": "Huelga de transporte en Madrid", "description": ""},
             {"source": "Marca", "title": "El Sáhara y la ONU, en el Bernabéu", "description": ""},
@@ -1135,10 +1136,41 @@ class BlitzBriefTests(unittest.TestCase):
 
         candidates = bot._coverage_candidates(news, ["El País"], pool)
 
+        # Primero el mejor de cada medio y luego los segundos: así el tope
+        # de candidatos no deja fuera a un medio por los repetidos de otro.
         self.assertEqual(
             [item["title"] for item in candidates],
-            ["EE UU lleva a la ONU la autonomía del Sáhara"],
+            [
+                "EE UU lleva a la ONU la autonomía del Sáhara",
+                "La ONU decide sobre el Sáhara",
+                "La ONU debate el Sáhara",
+            ],
         )
+
+    def test_attach_coverage_lines_confirms_lower_ranked_match_of_a_source(self):
+        # El titular de El Mundo con más palabras en común cuenta otro
+        # hecho; el que sí es la misma noticia comparte menos palabras.
+        headlines = [
+            {
+                "source": "El País",
+                "sources": ["El País"],
+                "title": "Sánchez convoca elecciones generales anticipadas para el 15 de marzo",
+                "description": "",
+            },
+        ]
+        pool = [
+            {"source": "El Mundo", "title": "Sánchez descarta convocar elecciones anticipadas", "description": ""},
+            {"source": "El Mundo", "title": "El presidente adelanta las generales al 15 de marzo", "description": ""},
+        ]
+        briefing = (
+            "🇪🇸 España: Sánchez convoca elecciones generales anticipadas "
+            "para el 15 de marzo [#1]"
+        )
+
+        with patch.object(bot, "_gemini_text", return_value="A: 2"):
+            result = bot._attach_coverage_lines(briefing, headlines, pool)
+
+        self.assertIn("   Cobertura: 🔴 El País · 🔵 El Mundo", result.splitlines())
 
     def test_attach_coverage_lines_adds_sources_confirmed_from_pool(self):
         headlines = [
@@ -1186,6 +1218,55 @@ class BlitzBriefTests(unittest.TestCase):
             result = bot._attach_coverage_lines(briefing, headlines, pool)
 
         self.assertIn("   Cobertura: 🔴 El País", result.splitlines())
+
+    def test_attach_coverage_lines_skips_blindspot_when_confirmation_fails(self):
+        headlines = [
+            {
+                "source": "El País",
+                "sources": ["El País", "eldiario.es", "La Vanguardia"],
+                "title": "Sánchez convoca elecciones generales anticipadas para el 15 de marzo",
+                "description": "",
+            },
+        ]
+        pool = [
+            {"source": "ABC", "title": "Sánchez convoca elecciones generales anticipadas", "description": ""},
+        ]
+        briefing = (
+            "🇪🇸 España: Sánchez convoca elecciones generales anticipadas "
+            "para el 15 de marzo [#1]"
+        )
+
+        # Sin respuesta de Gemini no se sabe si ABC la publicó: los medios
+        # citados se muestran, pero sin afirmar que la derecha la ignora.
+        with patch.object(bot, "_gemini_text", return_value=""):
+            result = bot._attach_coverage_lines(briefing, headlines, pool)
+
+        self.assertIn(
+            "   Cobertura: 🔴 El País, eldiario.es · ⚪ La Vanguardia",
+            result.splitlines(),
+        )
+
+    def test_attach_coverage_lines_keeps_blindspot_when_confirmation_says_none(self):
+        headlines = [
+            {
+                "source": "El País",
+                "sources": ["El País", "eldiario.es", "La Vanguardia"],
+                "title": "Sánchez convoca elecciones generales anticipadas para el 15 de marzo",
+                "description": "",
+            },
+        ]
+        pool = [
+            {"source": "ABC", "title": "Sánchez descarta convocar elecciones anticipadas", "description": ""},
+        ]
+        briefing = (
+            "🇪🇸 España: Sánchez convoca elecciones generales anticipadas "
+            "para el 15 de marzo [#1]"
+        )
+
+        with patch.object(bot, "_gemini_text", return_value="A: ninguno"):
+            result = bot._attach_coverage_lines(briefing, headlines, pool)
+
+        self.assertIn("Punto ciego", result)
 
     def test_attach_coverage_lines_skips_sports_and_tech_sections(self):
         headlines = [

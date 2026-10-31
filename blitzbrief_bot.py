@@ -354,6 +354,8 @@ COVERAGE_SOURCES: dict[str, str] = {
 COVERAGE_HEADLINES_PER_SOURCE = 25
 # Candidatos por noticia que se le pasan a Gemini para confirmar
 MAX_COVERAGE_CANDIDATES = 15
+# Y como mucho estos de un mismo medio
+COVERAGE_CANDIDATES_PER_SOURCE = 3
 # Hasta este número de medios se escriben sus nombres; con más, la línea
 # sería kilométrica en el móvil y se resume en un recuento por bloque.
 COVERAGE_MAX_NAMES = 5
@@ -1131,12 +1133,15 @@ def _filter_ungrounded_tech_section(briefing: str, headlines: list[dict]) -> str
 _BRIEFING_REFS_RE = re.compile(r"\s*\[\s*(#?\d+(?:\s*,\s*#?\d+)*)\s*\]\s*$")
 
 
-def _coverage_line(sources: list[str]) -> str:
+def _coverage_line(sources: list[str], flag_blindspot: bool = True) -> str:
     """Agrupa las fuentes por inclinación: '🔴 El País · 🔵 ABC'.
 
     Con muchos medios resume en recuento: '12 medios: 🔴 5 · ⚪ 3 · 🔵 4'.
     Devuelve "" si ninguna fuente tiene inclinación política (deporte,
     tecnología): ahí la línea no aportaría nada.
+
+    Con `flag_blindspot=False` no se avisa de punto ciego: se usa cuando no
+    se pudo comprobar si los medios que faltan publicaron la noticia.
     """
     by_lean: dict[str, list[str]] = {lean: [] for lean in LEAN_ICONS}
     for source in sources:
@@ -1163,7 +1168,11 @@ def _coverage_line(sources: list[str]) -> str:
 
     # Punto ciego: varios medios la destacan, pero ninguno de un lado.
     left, right = by_lean["izquierda"], by_lean["derecha"]
-    if total >= MIN_SOURCES_FOR_BLINDSPOT and bool(left) != bool(right):
+    if (
+        flag_blindspot
+        and total >= MIN_SOURCES_FOR_BLINDSPOT
+        and bool(left) != bool(right)
+    ):
         missing = "derechas" if left else "izquierdas"
         line += f" · ⚠️ Punto ciego: no la destaca la prensa de {missing}"
     return line
@@ -1175,11 +1184,14 @@ def _coverage_candidates(
     """Preselección barata (sin IA) de titulares del montón que podrían
     contar la misma noticia: comparten al menos dos palabras clave con ella.
 
-    Se queda con el más parecido de cada medio aún no contado, porque para
-    la cobertura basta con saber si un medio la publicó, no cuántas veces.
+    Guarda varios por medio aún no contado: el que más palabras comparte
+    puede ser otro hecho del mismo tema ("Sánchez descarta elecciones"
+    frente a "adelanta las generales"), y si solo quedara ese, Gemini lo
+    descartaría y el medio se perdería. Van primero los mejores de cada
+    medio y luego los segundos, para que el tope no deje a nadie fuera.
     """
     news_tokens = _briefing_tokens(news_text)
-    best: dict[str, tuple[int, dict]] = {}
+    by_source: dict[str, list[tuple[int, dict]]] = {}
     for item in pool:
         source = item.get("source", "")
         if source in known_sources or source not in SOURCE_LEANS:
@@ -1190,23 +1202,29 @@ def _coverage_candidates(
         overlap = len(news_tokens & item_tokens)
         if overlap < 2:
             continue
-        if source not in best or overlap > best[source][0]:
-            best[source] = (overlap, item)
+        by_source.setdefault(source, []).append((overlap, item))
 
-    ranked = sorted(best.values(), key=lambda pair: pair[0], reverse=True)
-    return [item for _, item in ranked[:MAX_COVERAGE_CANDIDATES]]
+    ranked: list[tuple[int, int, dict]] = []
+    for matches in by_source.values():
+        matches.sort(key=lambda pair: pair[0], reverse=True)
+        top_matches = matches[:COVERAGE_CANDIDATES_PER_SOURCE]
+        for rank, (overlap, item) in enumerate(top_matches):
+            ranked.append((rank, -overlap, item))
+    ranked.sort(key=lambda entry: entry[:2])
+    return [item for _, _, item in ranked[:MAX_COVERAGE_CANDIDATES]]
 
 
 def _confirm_coverage_candidates(
     sections: list[tuple[str, list[dict]]]
-) -> list[set[int]]:
+) -> list[Optional[set[int]]]:
     """Pregunta a Gemini qué candidatos cuentan el MISMO hecho que cada
     noticia. Las palabras compartidas no bastan: "Sánchez" y "Congreso"
     aparecen en diez noticias distintas cada día.
 
     Devuelve, por sección, las posiciones (desde 0) de los candidatos
-    confirmados. Si Gemini falla, conjuntos vacíos: la cobertura se queda
-    con lo que ya sabíamos.
+    confirmados, o None si Gemini no contestó por esa sección (falló la
+    llamada o cortó la respuesta). Un conjunto vacío significa "ninguno";
+    None, "no se sabe".
     """
     letters = "ABCDEFGHIJ"
     blocks: list[str] = []
@@ -1231,7 +1249,7 @@ def _confirm_coverage_candidates(
     )
     answer = _gemini_text(prompt, max_tokens=1024, temperature=0.0)
 
-    confirmed: list[set[int]] = [set() for _ in sections]
+    confirmed: list[Optional[set[int]]] = [None for _ in sections]
     for line in answer.splitlines():
         match = re.match(r"^\s*([A-J])\s*:\s*(.*)$", line)
         if not match:
@@ -1240,10 +1258,12 @@ def _confirm_coverage_candidates(
         if section_index >= len(sections):
             continue
         candidates = sections[section_index][1]
+        positions: set[int] = set()
         for ref in re.findall(r"\d+", match.group(2)):
             position = int(ref) - 1
             if 0 <= position < len(candidates):
-                confirmed[section_index].add(position)
+                positions.add(position)
+        confirmed[section_index] = positions
     return confirmed
 
 
@@ -1295,6 +1315,10 @@ def _attach_coverage_lines(
             sources.extend(headline.get("sources") or [headline.get("source", "")])
         sections.append((len(output) - 1, news_text, sources))
 
+    # Secciones con candidatos que Gemini no pudo confirmar: sin respuesta
+    # no se sabe si los medios que faltan la publicaron, así que no se
+    # avisa de punto ciego.
+    unchecked: set[int] = set()
     if coverage_pool and sections:
         candidates = [
             _coverage_candidates(news_text, sources, coverage_pool)
@@ -1307,6 +1331,9 @@ def _attach_coverage_lines(
                 [(sections[index][1], candidates[index]) for index in pending]
             )
             for index, positions in zip(pending, confirmed):
+                if positions is None:
+                    unchecked.add(index)
+                    continue
                 sections[index][2].extend(
                     candidates[index][position]["source"]
                     for position in sorted(positions)
@@ -1315,8 +1342,9 @@ def _attach_coverage_lines(
     # De abajo arriba, para que insertar una línea no descuadre las
     # posiciones de las secciones que quedan por procesar.
     any_coverage = False
-    for position, _, sources in reversed(sections):
-        coverage = _coverage_line(sources)
+    for index in reversed(range(len(sections))):
+        position, _, sources = sections[index]
+        coverage = _coverage_line(sources, flag_blindspot=index not in unchecked)
         if coverage:
             output.insert(position + 1, f"   {COVERAGE_PREFIX} {coverage}")
             any_coverage = True
