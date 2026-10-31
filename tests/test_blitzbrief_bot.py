@@ -672,6 +672,38 @@ class BlitzBriefTests(unittest.TestCase):
 
         self.assertEqual(headlines[0]["url"], "https://example.com/noticia")
 
+    def test_news_headlines_fill_coverage_pool_without_changing_briefing(self):
+        items = "".join(
+            f"""<item>
+              <title>Titular {number}</title>
+              <pubDate>Sun, 07 Jun 2026 00:{number:02d}:00 +0000</pubDate>
+            </item>"""
+            for number in range(10)
+        )
+        xml = f'<?xml version="1.0"?><rss><channel>{items}</channel></rss>'
+        pool: list[dict] = []
+
+        with patch.dict(bot.NEWS_SOURCES, {"ABC": "feed", "Hacker News": "feed"}, clear=True), \
+             patch.dict(bot.SPORTS_SOURCES, {}, clear=True), \
+             patch.dict(bot.COVERAGE_SOURCES, {"El Mundo": "feed"}, clear=True), \
+             patch.object(bot, "datetime", FakeDateTime), \
+             patch.object(bot, "_fetch_page", return_value=(xml, None)):
+            headlines = bot.fetch_news_headlines(coverage_pool=pool)
+
+        # El briefing sigue con 7 por medio y sin los medios de cobertura
+        self.assertEqual(len(headlines), 14)
+        self.assertNotIn("El Mundo", {item["source"] for item in headlines})
+        # La cobertura mira los 10 de ABC y El Mundo, y nada de Hacker News
+        sources = [item["source"] for item in pool]
+        self.assertEqual(sources.count("ABC"), 10)
+        self.assertEqual(sources.count("El Mundo"), 10)
+        self.assertNotIn("Hacker News", sources)
+
+    def test_coverage_sources_all_have_lean(self):
+        missing = [name for name in bot.COVERAGE_SOURCES if name not in bot.SOURCE_LEANS]
+
+        self.assertEqual(missing, [])
+
     def test_curate_news_headlines_groups_duplicate_titles(self):
         headlines = [
             {
@@ -1030,6 +1062,77 @@ class BlitzBriefTests(unittest.TestCase):
                 bot.LEAN_LEGEND,
             ],
         )
+
+    def test_coverage_line_summarizes_counts_when_many_sources(self):
+        line = bot._coverage_line([
+            "El País", "eldiario.es", "Cadena SER", "RTVE", "ABC", "El Mundo",
+        ])
+
+        self.assertEqual(line, "6 medios: 🔴 3 · ⚪ 1 · 🔵 2")
+
+    def test_coverage_candidates_keep_best_match_per_new_source(self):
+        news = "Estados Unidos propone a la ONU avalar la autonomía del Sáhara"
+        pool = [
+            {"source": "El Mundo", "title": "La ONU debate el Sáhara", "description": ""},
+            {"source": "El Mundo", "title": "EE UU lleva a la ONU la autonomía del Sáhara", "description": ""},
+            {"source": "El País", "title": "La ONU y la autonomía del Sáhara", "description": ""},
+            {"source": "RTVE", "title": "Huelga de transporte en Madrid", "description": ""},
+            {"source": "Marca", "title": "El Sáhara y la ONU, en el Bernabéu", "description": ""},
+        ]
+
+        candidates = bot._coverage_candidates(news, ["El País"], pool)
+
+        self.assertEqual(
+            [item["title"] for item in candidates],
+            ["EE UU lleva a la ONU la autonomía del Sáhara"],
+        )
+
+    def test_attach_coverage_lines_adds_sources_confirmed_from_pool(self):
+        headlines = [
+            {
+                "source": "El País",
+                "sources": ["El País"],
+                "title": "Estados Unidos propone a la ONU avalar la autonomía del Sáhara",
+                "description": "",
+            },
+        ]
+        pool = [
+            {"source": "El Mundo", "title": "EE UU pide a la ONU respaldar la autonomía del Sáhara", "description": ""},
+            {"source": "RTVE", "title": "La ONU vota sobre la misión del Sáhara en 2027", "description": ""},
+        ]
+        briefing = (
+            "🌍 Internacional: Estados Unidos propone a la ONU avalar "
+            "la autonomía del Sáhara [#1]"
+        )
+
+        # Gemini confirma el de El Mundo (A1) y descarta el de RTVE (A2)
+        with patch.object(bot, "_gemini_text", return_value="A: 1") as gemini:
+            result = bot._attach_coverage_lines(briefing, headlines, pool)
+
+        gemini.assert_called_once()
+        self.assertIn("   Cobertura: 🔴 El País · 🔵 El Mundo", result.splitlines())
+
+    def test_attach_coverage_lines_keeps_refs_when_confirmation_fails(self):
+        headlines = [
+            {
+                "source": "El País",
+                "sources": ["El País"],
+                "title": "Estados Unidos propone a la ONU avalar la autonomía del Sáhara",
+                "description": "",
+            },
+        ]
+        pool = [
+            {"source": "El Mundo", "title": "EE UU pide a la ONU respaldar la autonomía del Sáhara", "description": ""},
+        ]
+        briefing = (
+            "🌍 Internacional: Estados Unidos propone a la ONU avalar "
+            "la autonomía del Sáhara [#1]"
+        )
+
+        with patch.object(bot, "_gemini_text", return_value=""):
+            result = bot._attach_coverage_lines(briefing, headlines, pool)
+
+        self.assertIn("   Cobertura: 🔴 El País", result.splitlines())
 
     def test_attach_coverage_lines_skips_sports_and_tech_sections(self):
         headlines = [
