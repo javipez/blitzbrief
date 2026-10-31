@@ -94,6 +94,7 @@ En producción se ejecuta en un VPS con systemd: un servicio para `--serve`
 ```
 blitzbrief_bot.py        # Script principal (briefing IA + scraping + bot)
 blitzhealth.py           # Digest dominical Blitz Weekend
+cli_options.py           # Rechaza opciones mal escritas en ambos scripts
 authors.json             # Autores configurados (editable desde Telegram)
 .github/workflows/       # CI (tests en cada push/PR)
 ```

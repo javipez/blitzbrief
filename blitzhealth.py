@@ -29,6 +29,7 @@ from typing import Optional
 from zoneinfo import ZoneInfo
 
 import requests
+from cli_options import reject_unknown_options
 from content_security import (
     GEMINI_SYSTEM_INSTRUCTION, SecretRedactionFilter, clean_article, output_links_allowed,
     visible_text,
@@ -853,6 +854,9 @@ def preview_weekend_digest() -> None:
 # ---------------------------------------------------------------------------
 
 def main() -> None:
+    # Una opción mal escrita no debe acabar enviando el digest de verdad
+    reject_unknown_options(["--preview-weekend"], sys.argv[1:])
+
     log.info("=== Blitz Weekend — Digest semanal ===")
 
     if "--preview-weekend" in sys.argv:
