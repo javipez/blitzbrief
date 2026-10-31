@@ -59,3 +59,6 @@ líneas: si se llena, proponer cuál borrar.)
 - Comandos del VPS: la ruta del repo es `/home/javi/apps/blitzbrief` (no el
   home). Nunca inventar rutas ni nombres de servicio: consultar la memoria
   del proyecto antes de dar un comando para el VPS.
+- En el VPS no existe el comando `python` y las dependencias viven en un
+  entorno virtual: usar siempre `.venv/bin/python` (es lo que arranca el
+  `ExecStart` del servicio), no `python` ni `python3`.

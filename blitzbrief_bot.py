@@ -456,8 +456,11 @@ FIXTURES_LOOKAHEAD_DAYS = 1
 #
 # Los paréntesis de `\(m7\)` son obligatorios a propósito: sin ellos,
 # "DAZN 1 (M72)" se colaría como si fuera el canal 7.
+# `vamos\b(?!\s*\d)` deja fuera "M+ Vamos 3 (53)", que es otro canal (los
+# Vamos numerados van por los diales 51-53) y no se ve con esta suscripción.
+# "M+ Vamos (8 y 50)" sí pasa: ahí el número viene después del paréntesis.
 TV_CHANNEL_PATTERN = re.compile(
-    r"\(\s*m7\s*\)|\bvamos\b|\bdazn\b", re.IGNORECASE
+    r"\(\s*m7\s*\)|\bvamos\b(?!\s*\d)|\bdazn\b", re.IGNORECASE
 )
 LAPTOP_CHANNEL_PATTERN = re.compile(
     r"laliga|liga de campeones|champions", re.IGNORECASE
@@ -468,12 +471,17 @@ LAPTOP_MARK = "💻"    # toca el Mac
 
 # DAZN se ve en su app, así que sus diales en Movistar u Orange sobran:
 # "DAZN LaLiga (M55 O113)" se queda en "DAZN LaLiga".
+# Los diales llegan en formatos variados: "(M55 O113)", "(53)", "(8 y 50)".
 DAZN_PATTERN = re.compile(r"\bdazn\b", re.IGNORECASE)
-TV_DIAL_PATTERN = re.compile(r"\s*\(\s*(?:[MO]\d+\s*)+\)")
+TV_DIAL_PATTERN = re.compile(
+    r"\s*\(\s*[MO]?\d+(?:\s*(?:y\s*)?[MO]?\d+)*\s*\)", re.IGNORECASE
+)
 
 # De esos tres, los dos que entran en la cuota básica de Movistar+ y que
 # por eso merecen bloque propio: el 7 y Vamos.
-MOVISTAR_BASIC_PATTERN = re.compile(r"\(\s*m7\s*\)|\bvamos\b", re.IGNORECASE)
+MOVISTAR_BASIC_PATTERN = re.compile(
+    r"\(\s*m7\s*\)|\bvamos\b(?!\s*\d)", re.IGNORECASE
+)
 
 # Canales que no aportan nada en un aviso doméstico
 IGNORED_TV_CHANNELS: tuple[str, ...] = ("laliga tv bar", "ver en directo")
@@ -499,7 +507,10 @@ YOUTH_COMPETITION_PATTERN = re.compile(
 # que para la Euroliga y la ACB se consulta la guía de programación de
 # Movistar+: es la fuente de quien emite, y con una petición por día
 # tenemos todo lo que dan en el 7 y en Vamos.
-MOVISTAR_EPG_URL = "https://www.movistarplus.es/programacion/plus/{date}?v=json"
+# Ojo con la ruta: `/programacion/plus/<fecha>` devuelve un 410 porque la
+# web la interpreta como la ficha de un programa. La buena es
+# `/programacion-tv/<fecha>`, con `?v=json` para que responda en JSON.
+MOVISTAR_EPG_URL = "https://www.movistarplus.es/programacion-tv/{date}?v=json"
 
 # Nombres con los que la guía puede llamar a esos dos canales → cómo los
 # enseñamos nosotros. Se comparan normalizados (minúsculas, sin acentos).

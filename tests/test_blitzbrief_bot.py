@@ -1746,6 +1746,8 @@ class BlitzBriefTests(unittest.TestCase):
             (["Movistar Vamos (M8)"], bot.TV_MARK, "Vamos llega a la tele"),
             (["Movistar Plus+ (M7)"], bot.TV_MARK, "el dial 7 también"),
             (["DAZN LaLiga (M55 O113)"], bot.TV_MARK, "DAZN tiene su app"),
+            (["M+ Vamos (8 y 50)"], bot.TV_MARK, "Vamos a secas es el dial 8"),
+            (["M+ Vamos 3 (53)"], "", "los Vamos numerados son otros canales"),
             (["M+ LALIGA (M54 O110)"], bot.LAPTOP_MARK, "LaLiga solo en el Mac"),
             (["Movistar Liga de Campeones (M61)"], bot.LAPTOP_MARK,
              "Champions solo en el Mac"),
@@ -1786,6 +1788,22 @@ class BlitzBriefTests(unittest.TestCase):
         self.assertNotIn("O113", juntos)
         self.assertIn("Movistar Vamos (M8)", juntos,
                       "el dial de Movistar sí hace falta para sintonizar")
+
+    def test_los_vamos_numerados_no_entran_en_el_bloque(self):
+        hoy = datetime.now(ZoneInfo("Europe/Madrid")) + timedelta(hours=3)
+        html = self._portada([
+            self._fila_tv(hoy.astimezone(timezone.utc), "Al Hilal", "Al Fateh",
+                          "Saudi Pro League", ["M+ Vamos 3 (53)"]),
+            self._fila_tv(hoy.astimezone(timezone.utc), "Boca Juniors",
+                          "River Plate", "Primera División Argentina",
+                          ["M+ Vamos (8 y 50)"]),
+        ])
+
+        with patch.object(bot, "_fetch_page", return_value=(html, None)):
+            lines = bot.fetch_basic_football_highlights()
+
+        self.assertEqual(len(lines), 1)
+        self.assertIn("Boca Juniors vs River Plate", lines[0])
 
     def test_dazn_no_entra_en_el_bloque_del_7_y_vamos(self):
         hoy = datetime.now(ZoneInfo("Europe/Madrid")) + timedelta(hours=3)
