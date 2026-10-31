@@ -445,15 +445,35 @@ FUTBOL_EN_LA_TV_URL = "https://www.futbolenlatv.es/"
 # jugarse, que cansa más de lo que avisa.
 FIXTURES_LOOKAHEAD_DAYS = 1
 
-# Canales que entran en la cuota básica de Movistar+: el dial 7 (Movistar
-# Plus+) y Vamos (dial 8). Son los que se ven en casa sin pagar nada extra,
-# así que lo que caiga en ellos se marca y además se lista aparte.
+# Dónde se puede ver cada cosa, que es lo que de verdad se quiere saber
+# por la mañana. Tres casos:
+#
+#  1. En la tele del salón: el dial 7, Vamos (dial 8) y DAZN, que tiene
+#     su propia app en el Apple TV.
+#  2. Solo en el Mac: los canales de LaLiga y de Champions de Movistar,
+#     que no llegan al descodificador y hay que verlos por web.
+#  3. Ni idea: cualquier otro canal, que se deja sin marca.
+#
 # Los paréntesis de `\(m7\)` son obligatorios a propósito: sin ellos,
 # "DAZN 1 (M72)" se colaría como si fuera el canal 7.
-HOME_TV_PATTERN = re.compile(r"\(\s*m7\s*\)|\bvamos\b", re.IGNORECASE)
+TV_CHANNEL_PATTERN = re.compile(
+    r"\(\s*m7\s*\)|\bvamos\b|\bdazn\b", re.IGNORECASE
+)
+LAPTOP_CHANNEL_PATTERN = re.compile(
+    r"laliga|liga de campeones|champions", re.IGNORECASE
+)
 
-# Marca que acompaña a un partido que se puede ver con la suscripción
-HOME_TV_MARK = "✅"
+TV_MARK = "✅"        # lo ves en la tele
+LAPTOP_MARK = "💻"    # toca el Mac
+
+# DAZN se ve en su app, así que sus diales en Movistar u Orange sobran:
+# "DAZN LaLiga (M55 O113)" se queda en "DAZN LaLiga".
+DAZN_PATTERN = re.compile(r"\bdazn\b", re.IGNORECASE)
+TV_DIAL_PATTERN = re.compile(r"\s*\(\s*(?:[MO]\d+\s*)+\)")
+
+# De esos tres, los dos que entran en la cuota básica de Movistar+ y que
+# por eso merecen bloque propio: el 7 y Vamos.
+MOVISTAR_BASIC_PATTERN = re.compile(r"\(\s*m7\s*\)|\bvamos\b", re.IGNORECASE)
 
 # Canales que no aportan nada en un aviso doméstico
 IGNORED_TV_CHANNELS: tuple[str, ...] = ("laliga tv bar", "ver en directo")
@@ -474,7 +494,7 @@ YOUTH_COMPETITION_PATTERN = re.compile(
     r"sub[\s-]?\d{1,2}|u[\s-]?\d{1,2})\b"
 )
 
-# ── Baloncesto en los canales de casa ──────────────────────────────
+# ── Baloncesto en el 7 y en Vamos ──────────────────────────────────
 # futbolenlatv solo cubre fútbol y su robots.txt cierra /baloncesto, así
 # que para la Euroliga y la ACB se consulta la guía de programación de
 # Movistar+: es la fuente de quien emite, y con una petición por día
@@ -484,7 +504,7 @@ MOVISTAR_EPG_URL = "https://www.movistarplus.es/programacion/plus/{date}?v=json"
 # Nombres con los que la guía puede llamar a esos dos canales → cómo los
 # enseñamos nosotros. Se comparan normalizados (minúsculas, sin acentos).
 # Si algún día la guía usa otro nombre, basta con añadirlo aquí.
-MOVISTAR_HOME_CHANNEL_NAMES: dict[str, str] = {
+MOVISTAR_BASIC_CHANNEL_NAMES: dict[str, str] = {
     "movistar plus+": "Movistar Plus+ (M7)",
     "movistar plus": "Movistar Plus+ (M7)",
     "plus": "Movistar Plus+ (M7)",
@@ -2073,6 +2093,10 @@ def _clean_tv_channel(raw: str) -> str:
     """Normaliza el nombre de un canal tal como lo publica futbolenlatv."""
     channel = raw.split(":")[0].strip()
     channel = re.sub(r"\s+", " ", channel)
+    # Los diales solo sirven para sintonizar en el descodificador. En DAZN
+    # se entra por su app, así que ahí el dial es ruido.
+    if DAZN_PATTERN.search(channel):
+        channel = TV_DIAL_PATTERN.sub("", channel).strip()
     return channel
 
 
@@ -2173,18 +2197,32 @@ def _fixture_day_label(match_local: datetime, today: date) -> str:
     return f"{weekdays[match_local.weekday()]} {match_local.day}"
 
 
-def _is_home_channel(channel: str) -> bool:
-    """¿El canal entra en la cuota básica (dial 7 o Vamos)?"""
-    return bool(HOME_TV_PATTERN.search(channel))
+def _is_basic_channel(channel: str) -> bool:
+    """¿El canal entra en la cuota básica de Movistar+ (dial 7 o Vamos)?"""
+    return bool(MOVISTAR_BASIC_PATTERN.search(channel))
+
+
+def _channel_access_mark(channels: list[str]) -> str:
+    """Marca de dónde se puede ver un partido, según sus canales.
+
+    El orden importa: si está en la tele da igual que también lo den en
+    un canal que solo se ve en el Mac.
+    """
+    if any(TV_CHANNEL_PATTERN.search(channel) for channel in channels):
+        return TV_MARK
+    if any(LAPTOP_CHANNEL_PATTERN.search(channel) for channel in channels):
+        return LAPTOP_MARK
+    return ""
 
 
 def _format_fixture_line(match: dict, match_local: datetime, today: date) -> str:
     channels = match["channels"][:MAX_TV_CHANNELS_PER_MATCH]
     channel_str = f" — {', '.join(channels)}" if channels else ""
     # La marca se decide mirando TODOS los canales, no solo los que caben
-    # en la línea: si lo dan en el 7 o en Vamos, es lo que hay que saber.
-    if any(_is_home_channel(channel) for channel in match["channels"]):
-        channel_str += f" {HOME_TV_MARK}"
+    # en la línea: dónde se puede ver es lo primero que se quiere saber.
+    mark = _channel_access_mark(match["channels"])
+    if mark:
+        channel_str += f" {mark}"
     competition = f" ({match['competition']})" if match["competition"] else ""
     return (
         f"⚽ {_fixture_day_label(match_local, today)} {match_local:%H:%M} — "
@@ -2233,7 +2271,7 @@ def fetch_upcoming_fixtures(matches: Optional[list[dict]] = None) -> list[str]:
     return lines
 
 
-def _home_football_entries(
+def _basic_football_entries(
     matches: list[dict], now: datetime
 ) -> list[tuple[datetime, str]]:
     """Fútbol de hoy y mañana en el dial 7 o en Vamos, sea de quien sea.
@@ -2243,8 +2281,8 @@ def _home_football_entries(
     """
     entries: list[tuple[datetime, str]] = []
     for match in matches:
-        home_channels = [c for c in match["channels"] if _is_home_channel(c)]
-        if not home_channels:
+        basic_channels = [c for c in match["channels"] if _is_basic_channel(c)]
+        if not basic_channels:
             continue
         match_local = match["kickoff"].astimezone(now.tzinfo)
         if not _within_lookahead(match_local, now):
@@ -2254,12 +2292,12 @@ def _home_football_entries(
             match_local,
             f"⚽ {_fixture_day_label(match_local, now.date())} "
             f"{match_local:%H:%M} — {match['home']} vs {match['away']}"
-            f"{competition} — {home_channels[0]}",
+            f"{competition} — {basic_channels[0]}",
         ))
     return entries
 
 
-def fetch_home_football_highlights(
+def fetch_basic_football_highlights(
     matches: Optional[list[dict]] = None,
 ) -> list[str]:
     """Lo que dan hoy y mañana en el 7 o en Vamos, listo para el mensaje."""
@@ -2267,7 +2305,7 @@ def fetch_home_football_highlights(
     if matches is None:
         matches = _fetch_tv_matches()
 
-    entries = sorted(_home_football_entries(matches, now), key=lambda e: e[0])
+    entries = sorted(_basic_football_entries(matches, now), key=lambda e: e[0])
     lines = [line for _, line in entries]
     log.info(f"[Fixtures] Fútbol en el 7/Vamos: {len(lines)}")
     return lines
@@ -2295,9 +2333,9 @@ def _first_value(data: dict, keys: tuple[str, ...]):
     return None
 
 
-def _epg_home_channel_label(name: str) -> Optional[str]:
+def _epg_basic_channel_label(name: str) -> Optional[str]:
     """Nombre del canal en la guía → etiqueta nuestra, o None si no nos sirve."""
-    return MOVISTAR_HOME_CHANNEL_NAMES.get(_normalize_text(name))
+    return MOVISTAR_BASIC_CHANNEL_NAMES.get(_normalize_text(name))
 
 
 def _parse_epg_start(raw) -> Optional[datetime]:
@@ -2333,7 +2371,7 @@ def _parse_epg_programmes(payload) -> list[dict]:
     La guía devuelve un diccionario de canales; de cada uno interesan su
     nombre y su lista de programas. Si no aparece ninguno de nuestros dos
     canales se deja constancia en el log de los nombres que sí venían:
-    es lo que hace falta para corregir `MOVISTAR_HOME_CHANNEL_NAMES`.
+    es lo que hace falta para corregir `MOVISTAR_BASIC_CHANNEL_NAMES`.
     """
     channels = payload.get("data", payload) if isinstance(payload, dict) else payload
     if isinstance(channels, dict):
@@ -2353,7 +2391,7 @@ def _parse_epg_programmes(payload) -> list[dict]:
             continue
         channel_names.append(name)
 
-        label = _epg_home_channel_label(name)
+        label = _epg_basic_channel_label(name)
         if label is None:
             continue
 
@@ -2375,7 +2413,7 @@ def _parse_epg_programmes(payload) -> list[dict]:
 
 
 def _fetch_epg_day(day: date) -> list[dict]:
-    """Programas de los canales de casa para un día concreto."""
+    """Programas del 7 y de Vamos para un día concreto."""
     url = MOVISTAR_EPG_URL.format(date=day.isoformat())
     raw, err = _fetch_page(url)
     if not raw:
@@ -2395,7 +2433,7 @@ def _clean_basketball_title(title: str) -> str:
     return " ".join(cleaned.split())
 
 
-def _home_basketball_entries(
+def _basic_basketball_entries(
     now: datetime, programmes: Optional[list[dict]] = None
 ) -> list[tuple[datetime, str]]:
     """Euroliga y ACB de hoy y mañana en el 7 o en Vamos."""
@@ -2429,28 +2467,28 @@ def _home_basketball_entries(
     return entries
 
 
-def fetch_home_basketball(programmes: Optional[list[dict]] = None) -> list[str]:
+def fetch_basic_basketball(programmes: Optional[list[dict]] = None) -> list[str]:
     """Baloncesto de hoy y mañana que se puede ver con la suscripción."""
     now = datetime.now(ZoneInfo("Europe/Madrid"))
-    entries = sorted(_home_basketball_entries(now, programmes), key=lambda e: e[0])
+    entries = sorted(_basic_basketball_entries(now, programmes), key=lambda e: e[0])
     lines = [line for _, line in entries]
     log.info(f"[Baloncesto] Euroliga/ACB en el 7/Vamos: {len(lines)}")
     return lines
 
 
-def fetch_home_tv_lineup(matches: Optional[list[dict]] = None) -> list[str]:
-    """Todo lo que se puede ver en casa —fútbol y baloncesto— por hora.
+def fetch_basic_tv_lineup(matches: Optional[list[dict]] = None) -> list[str]:
+    """Todo lo del 7 y de Vamos —fútbol y baloncesto— ordenado por hora.
 
     Los partidos de tus equipos se dejan fuera: ya salen en el bloque de
-    arriba, con su marca de que se pueden ver. Repetirlos solo alargaría
-    el mensaje de la mañana.
+    arriba, con su marca de dónde verlos. Repetirlos solo alargaría el
+    mensaje de la mañana.
     """
     now = datetime.now(ZoneInfo("Europe/Madrid"))
     if matches is None:
         matches = _fetch_tv_matches()
 
     others = [match for match in matches if not _is_followed_fixture(match)]
-    entries = _home_football_entries(others, now) + _home_basketball_entries(now)
+    entries = _basic_football_entries(others, now) + _basic_basketball_entries(now)
     entries.sort(key=lambda pair: pair[0])
     return [line for _, line in entries]
 
@@ -3217,9 +3255,9 @@ def build_fixture_groups() -> list[tuple[str, str, list[str]]]:
     if fixtures:
         groups.append(("📅", "Próximos partidos", fixtures))
 
-    home_tv = fetch_home_tv_lineup(tv_matches)
-    if home_tv:
-        groups.append(("📺", "Lo puedes ver en casa (M7 / Vamos)", home_tv))
+    basic_tv = fetch_basic_tv_lineup(tv_matches)
+    if basic_tv:
+        groups.append(("📺", "También en el 7 y en Vamos", basic_tv))
 
     return groups
 

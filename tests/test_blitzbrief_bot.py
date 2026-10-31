@@ -950,7 +950,7 @@ class BlitzBriefTests(unittest.TestCase):
             "🌍 Internacional: Test\n   Por qué importa: Afecta a <mercados>.",
             [
                 ("📅", "Próximos partidos", ["Real Madrid - Málaga"]),
-                ("📺", "Lo puedes ver en casa (M7 / Vamos)",
+                ("📺", "También en el 7 y en Vamos",
                  ["🏀 Hoy 20:30 — Euroliga. Real Madrid - Baskonia"]),
             ],
         )
@@ -962,8 +962,7 @@ class BlitzBriefTests(unittest.TestCase):
         self.assertIn("<details open><summary>Próximos partidos</summary><ul>", html)
         self.assertIn("<li>Real Madrid - Málaga</li>", html)
         self.assertIn(
-            "<details open><summary>Lo puedes ver en casa (M7 / Vamos)"
-            "</summary><ul>",
+            "<details open><summary>También en el 7 y en Vamos</summary><ul>",
             html,
         )
         self.assertIn("<li>🏀 Hoy 20:30 — Euroliga. Real Madrid - Baskonia</li>", html)
@@ -1731,7 +1730,7 @@ class BlitzBriefTests(unittest.TestCase):
         ])
 
         with patch.object(bot, "_fetch_page", return_value=(html, None)):
-            lines = bot.fetch_home_football_highlights()
+            lines = bot.fetch_basic_football_highlights()
 
         self.assertEqual(len(lines), 2, "M72 no debe colarse como si fuera M7")
         juntos = " | ".join(lines)
@@ -1739,31 +1738,69 @@ class BlitzBriefTests(unittest.TestCase):
         self.assertIn("Arsenal vs Inter", juntos)
         self.assertNotIn("Hull City", juntos)
 
-    def test_partido_en_canal_de_casa_lleva_marca(self):
+    def test_marca_de_donde_se_puede_ver_cada_partido(self):
+        manana = datetime.now(ZoneInfo("Europe/Madrid")) + timedelta(days=1)
+        manana = manana.replace(hour=21, minute=0, second=0, microsecond=0)
+        casos = [
+            # (canales, marca esperada, por qué)
+            (["Movistar Vamos (M8)"], bot.TV_MARK, "Vamos llega a la tele"),
+            (["Movistar Plus+ (M7)"], bot.TV_MARK, "el dial 7 también"),
+            (["DAZN LaLiga (M55 O113)"], bot.TV_MARK, "DAZN tiene su app"),
+            (["M+ LALIGA (M54 O110)"], bot.LAPTOP_MARK, "LaLiga solo en el Mac"),
+            (["Movistar Liga de Campeones (M61)"], bot.LAPTOP_MARK,
+             "Champions solo en el Mac"),
+            (["DAZN LaLiga", "M+ LALIGA (M54 O110)"], bot.TV_MARK,
+             "si está en los dos, manda la tele"),
+            (["Teledeporte"], "", "sin marca si no sabemos dónde se ve"),
+        ]
+
+        for canales, marca, motivo in casos:
+            with self.subTest(canales=canales):
+                html = self._portada([self._fila_tv(
+                    manana.astimezone(timezone.utc), "Real Madrid",
+                    "Juventus", "Champions League", canales)])
+                with patch.object(bot, "_fetch_page", return_value=(html, None)):
+                    linea = bot.fetch_upcoming_fixtures()[0]
+
+                puestas = [m for m in (bot.TV_MARK, bot.LAPTOP_MARK)
+                           if m in linea]
+                self.assertEqual(puestas, [marca] if marca else [], motivo)
+
+    def test_dazn_se_muestra_sin_los_diales_de_movistar(self):
         manana = datetime.now(ZoneInfo("Europe/Madrid")) + timedelta(days=1)
         manana = manana.replace(hour=21, minute=0, second=0, microsecond=0)
         html = self._portada([
+            self._fila_tv(manana.astimezone(timezone.utc), "Real Betis",
+                          "Málaga", "La Liga Hypermotion",
+                          ["DAZN LaLiga (M55 O113)"]),
             self._fila_tv(manana.astimezone(timezone.utc), "Real Madrid",
                           "Juventus", "Champions League",
                           ["Movistar Vamos (M8)"]),
-            self._fila_tv(manana.astimezone(timezone.utc), "Málaga",
-                          "Albacete", "La Liga Hypermotion",
-                          ["LaLiga Hypermotion (M60)"]),
         ])
 
         with patch.object(bot, "_fetch_page", return_value=(html, None)):
-            lines = bot.fetch_upcoming_fixtures()
+            juntos = " | ".join(bot.fetch_upcoming_fixtures())
 
-        con_marca = [line for line in lines if bot.HOME_TV_MARK in line]
-        self.assertEqual(len(con_marca), 1)
-        self.assertIn("Real Madrid vs Juventus", con_marca[0])
-        self.assertIn("Movistar Vamos (M8)", con_marca[0])
+        self.assertIn("DAZN LaLiga", juntos)
+        self.assertNotIn("M55", juntos, "el dial de DAZN sobra: se ve en su app")
+        self.assertNotIn("O113", juntos)
+        self.assertIn("Movistar Vamos (M8)", juntos,
+                      "el dial de Movistar sí hace falta para sintonizar")
+
+    def test_dazn_no_entra_en_el_bloque_del_7_y_vamos(self):
+        hoy = datetime.now(ZoneInfo("Europe/Madrid")) + timedelta(hours=3)
+        html = self._portada([self._fila_tv(
+            hoy.astimezone(timezone.utc), "Girona", "Osasuna",
+            "La Liga EA Sports", ["DAZN LaLiga (M55 O113)"])])
+
+        with patch.object(bot, "_fetch_page", return_value=(html, None)):
+            self.assertEqual(bot.fetch_basic_football_highlights(), [])
 
     def test_fixtures_vacios_si_falla_la_descarga(self):
         with patch.object(bot, "_fetch_page", return_value=(None, "403")):
             self.assertEqual(bot.fetch_upcoming_fixtures(), [])
-            self.assertEqual(bot.fetch_home_football_highlights(), [])
-            self.assertEqual(bot.fetch_home_basketball(), [])
+            self.assertEqual(bot.fetch_basic_football_highlights(), [])
+            self.assertEqual(bot.fetch_basic_basketball(), [])
 
     def test_etiqueta_de_dia_del_partido(self):
         hoy = datetime(2026, 8, 22, 21, 0, tzinfo=ZoneInfo("Europe/Madrid"))
@@ -1800,7 +1837,7 @@ class BlitzBriefTests(unittest.TestCase):
         ])
 
         with patch.object(bot, "_fetch_page", return_value=(guia, None)):
-            lines = bot.fetch_home_basketball()
+            lines = bot.fetch_basic_basketball()
 
         self.assertEqual(len(lines), 2, "solo el 7 y Vamos, y sin duplicar días")
         juntos = " | ".join(lines)
@@ -1824,7 +1861,7 @@ class BlitzBriefTests(unittest.TestCase):
         ])
 
         with patch.object(bot, "_fetch_page", return_value=(guia, None)):
-            lines = bot.fetch_home_basketball()
+            lines = bot.fetch_basic_basketball()
 
         self.assertEqual(len(lines), 1)
         self.assertIn("Real Madrid - Olympiacos", lines[0])
@@ -1836,13 +1873,13 @@ class BlitzBriefTests(unittest.TestCase):
         ])
 
         with patch.object(bot, "_fetch_page", return_value=(guia, None)):
-            self.assertEqual(bot.fetch_home_basketball(), [])
+            self.assertEqual(bot.fetch_basic_basketball(), [])
 
     def test_baloncesto_no_rompe_si_la_guia_cambia_de_forma(self):
         with patch.object(bot, "_fetch_page", return_value=("<html>", None)):
-            self.assertEqual(bot.fetch_home_basketball(), [])
+            self.assertEqual(bot.fetch_basic_basketball(), [])
         with patch.object(bot, "_fetch_page", return_value=('{"data": []}', None)):
-            self.assertEqual(bot.fetch_home_basketball(), [])
+            self.assertEqual(bot.fetch_basic_basketball(), [])
 
     def test_bloques_de_partidos_mezclan_futbol_y_baloncesto(self):
         manana = datetime.now(ZoneInfo("Europe/Madrid")) + timedelta(days=1)
@@ -1868,10 +1905,10 @@ class BlitzBriefTests(unittest.TestCase):
 
         titulos = [title for _, title, _ in groups]
         self.assertEqual(titulos,
-                         ["Próximos partidos", "Lo puedes ver en casa (M7 / Vamos)"])
+                         ["Próximos partidos", "También en el 7 y en Vamos"])
 
         # El partido del Madrid sale arriba con su marca, no repetido abajo.
-        self.assertIn(bot.HOME_TV_MARK, groups[0][2][0])
+        self.assertIn(bot.TV_MARK, groups[0][2][0])
 
         en_casa = groups[1][2]
         self.assertEqual(len(en_casa), 2, "el del Madrid no se repite aquí")

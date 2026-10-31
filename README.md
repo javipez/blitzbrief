@@ -105,7 +105,8 @@ authors.json             # Autores configurados (editable desde Telegram)
 - `.blitzbrief_seen_articles.json` evita enviar duplicados (también el aviso de entrenos, que llega una sola vez por semana)
 - El aviso de entrenos pregunta a la API de WordPress del blog (`wp-json`) cuál es el último post `entrenamientos-DD-MM-YYYY-al-DD-MM-YYYY`; si esa API falla, sondea las URLs de la semana en curso y la siguiente. Solo avisa si la semana no ha terminado. Se desactiva dejando vacío `BOX_WORKOUTS_URL_TEMPLATE`
 - El digest de la tarde avisa también cuando ningún autor ha publicado ("Hoy no hay artículos nuevos de tus autores"), para que el silencio no se confunda con un fallo del bot
-- Los partidos salen de dos fuentes: **futbolenlatv.es** (fútbol, solo la portada) y la **guía de programación de Movistar+** (Euroliga y ACB en el dial 7 y en Vamos). El ✅ marca los partidos que entran en la cuota básica. Para comprobar que ambas responden: `python blitzbrief_bot.py --preview-partidos`
+- Los partidos salen de dos fuentes: **futbolenlatv.es** (fútbol, solo la portada) y la **guía de programación de Movistar+** (Euroliga y ACB en el dial 7 y en Vamos). Para comprobar que ambas responden: `python blitzbrief_bot.py --preview-partidos`
+- Cada partido lleva una marca de **dónde se puede ver**: ✅ en la tele (dial 7, Vamos y DAZN, que tiene app propia) y 💻 solo en el Mac (los canales de LaLiga y Champions de Movistar, que no llegan al descodificador). Se configura en `TV_CHANNEL_PATTERN` y `LAPTOP_CHANNEL_PATTERN`. Los diales de DAZN se omiten porque se entra por su app, no sintonizando
 - Los equipos seguidos se configuran en `FOLLOWED_FOOTBALL_TEAMS` y las competiciones de baloncesto en `BASKETBALL_COMPETITION_PATTERN`, ambos en `blitzbrief_bot.py`
 - Si algún medio cambia su web, el parser puede necesitar ajustes (scraping HTML, no API oficial)
 - El script es respetuoso con los servidores: una petición por autor, sin concurrencia agresiva

@@ -44,7 +44,11 @@ Variables de entorno necesarias en local: `TELEGRAM_BOT_TOKEN`,
   programación de Movistar+ (baloncesto de Euroliga y ACB en el dial 7 y
   en Vamos). Si el baloncesto deja de aparecer, el log dice qué canales
   devolvió la guía: se corrige añadiendo el nombre a
-  `MOVISTAR_HOME_CHANNEL_NAMES`.
+  `MOVISTAR_BASIC_CHANNEL_NAMES`.
+- Las marcas de los partidos dicen dónde se pueden ver, no si se pagan:
+  ✅ en la tele (dial 7, Vamos y DAZN) y 💻 solo en el Mac (canales de
+  LaLiga y Champions de Movistar). Es una peculiaridad de la suscripción
+  del usuario, no una regla general de Movistar+.
 - El script hace una petición por autor sin concurrencia agresiva, a
   propósito, para ser respetuoso con los servidores.
 
