@@ -700,6 +700,43 @@ class BlitzBriefTests(unittest.TestCase):
         self.assertEqual(sources.count("El Mundo"), 10)
         self.assertNotIn("Hacker News", sources)
 
+    def test_coverage_reads_google_news_sitemap(self):
+        # RTVE, EFE y El Periódico ya no dan un RSS útil, pero sí el sitemap
+        # de noticias que publican para Google News.
+        xml = """<?xml version="1.0"?>
+        <urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9"
+                xmlns:news="http://www.google.com/schemas/sitemap-news/0.9"
+                xmlns:image="http://www.google.com/schemas/sitemap-image/1.1">
+          <url>
+            <loc>https://www.rtve.es/noticias/vieja</loc>
+            <news:news>
+              <news:publication_date>2026-05-30T10:00:00+02:00</news:publication_date>
+              <news:title>Noticia de anteayer</news:title>
+            </news:news>
+          </url>
+          <url>
+            <loc>https://www.rtve.es/noticias/nueva</loc>
+            <news:news>
+              <news:publication_date>2026-06-01T23:10:00+02:00</news:publication_date>
+              <news:title><![CDATA[El Gobierno aprueba el presupuesto]]></news:title>
+            </news:news>
+            <image:image><image:loc>https://img.rtve.es/foto.jpg</image:loc></image:image>
+          </url>
+        </urlset>"""
+        pool: list[dict] = []
+
+        with patch.dict(bot.NEWS_SOURCES, {}, clear=True), \
+             patch.dict(bot.SPORTS_SOURCES, {}, clear=True), \
+             patch.dict(bot.COVERAGE_SOURCES, {"RTVE": "sitemap"}, clear=True), \
+             patch.object(bot, "datetime", FakeDateTime), \
+             patch.object(bot, "_fetch_page", return_value=(xml, None)):
+            bot.fetch_news_headlines(coverage_pool=pool)
+
+        self.assertEqual(len(pool), 1)
+        self.assertEqual(pool[0]["source"], "RTVE")
+        self.assertEqual(pool[0]["title"], "El Gobierno aprueba el presupuesto")
+        self.assertEqual(pool[0]["url"], "https://www.rtve.es/noticias/nueva")
+
     def test_source_leans_have_same_number_of_outlets_per_side(self):
         counts = Counter(bot.SOURCE_LEANS.values())
 

@@ -331,16 +331,21 @@ SOURCE_LEANS: dict[str, str] = {
 # Medios que solo sirven para contar quién publica cada noticia: NO entran
 # en la lista que Gemini usa para elegir el briefing. Sin prensa militante
 # (OKDiario, Libertad Digital, Público...) por decisión editorial.
+#
+# El Periódico, RTVE y EFE van por su sitemap de Google News: el RSS de
+# portada de El Periódico sale vacío, el de RTVE lleva parado desde 2022 y
+# el de EFE devuelve error 500. La Razón usa el feed que anuncia su propia
+# portada; /rss/portada.xml da 503.
 COVERAGE_SOURCES: dict[str, str] = {
     "infoLibre": "https://www.infolibre.es/rss",
     "Cadena SER": "https://cadenaser.com/arc/outboundfeeds/rss/?outputType=xml",
-    "El Periódico": "https://www.elperiodico.com/es/rss/rss_portada.xml",
-    "RTVE": "https://api2.rtve.es/rss/temas_noticias.xml",
+    "El Periódico": "https://www.elperiodico.com/es/sitemapNews.xml",
+    "RTVE": "https://www.rtve.es/sitemaps/sitemaps-news.xml",
     "Europa Press": "https://www.europapress.es/rss/rss.aspx",
-    "EFE": "https://efe.com/feed/",
+    "EFE": "https://efe.com/news-sitemap.xml",
     "20minutos": "https://www.20minutos.es/rss/",
     "El Mundo": "https://e00-elmundo.uecdn.es/elmundo/rss/portada.xml",
-    "La Razón": "https://www.larazon.es/rss/portada.xml",
+    "La Razón": "https://www.larazon.es/?outputType=xml",
 }
 # Para la cobertura se mira más hondo en cada feed que para el briefing:
 # una noticia puede no estar entre los 7 últimos titulares de un medio y
@@ -2184,8 +2189,8 @@ def fetch_random_elpais_article(slug: str) -> Optional[dict]:
 def _fetch_feed_items(
     source_name: str, feed_url: str, cutoff: datetime
 ) -> Optional[list[dict]]:
-    """Descarga un feed RSS/Atom y devuelve sus titulares posteriores a
-    `cutoff`, del más reciente al más antiguo.
+    """Descarga un feed RSS/Atom (o un sitemap de Google News) y devuelve
+    sus titulares posteriores a `cutoff`, del más reciente al más antiguo.
 
     Devuelve None si el feed no se pudo descargar o no es XML válido.
     """
@@ -2258,6 +2263,36 @@ def _fetch_feed_items(
                 "title": title,
                 "description": desc,
                 "url": url,
+                "published_at": pub_dt.isoformat(),
+                "profile": _source_profile(source_name),
+            }))
+
+    # Sitemap de Google News: lo usan medios que ya no mantienen un RSS
+    # útil (RTVE, EFE, El Periódico). Cada <url> trae el enlace en <loc> y
+    # el título y la fecha dentro de <news:news>; no hay entradilla.
+    if not source_items:
+        ns = {
+            "sm": "http://www.sitemaps.org/schemas/sitemap/0.9",
+            "news": "http://www.google.com/schemas/sitemap-news/0.9",
+        }
+        for entry in root.findall("sm:url", ns):
+            title = visible_text(entry.findtext("news:news/news:title", "", ns))
+            raw_date = entry.findtext("news:news/news:publication_date", "", ns)
+            if not title or not raw_date.strip():
+                continue
+            try:
+                pub_dt = _ensure_aware_utc(
+                    datetime.fromisoformat(raw_date.strip().replace("Z", "+00:00"))
+                )
+            except ValueError:
+                continue
+            if pub_dt < cutoff:
+                continue
+            source_items.append((pub_dt, {
+                "source": source_name,
+                "title": title,
+                "description": "",
+                "url": entry.findtext("sm:loc", "", ns).strip(),
                 "published_at": pub_dt.isoformat(),
                 "profile": _source_profile(source_name),
             }))
