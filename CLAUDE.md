@@ -54,6 +54,16 @@ Variables de entorno necesarias en local: `TELEGRAM_BOT_TOKEN`,
   ✅ en la tele (dial 7, Vamos y DAZN) y 💻 solo en el Mac (canales de
   LaLiga y Champions de Movistar). Es una peculiaridad de la suscripción
   del usuario, no una regla general de Movistar+.
+- Bajo cada noticia del briefing va una línea de cobertura por inclinación
+  (🔴 izquierda · ⚪ centro · 🔵 derecha), con los medios de
+  `SOURCE_LEANS`: solo prensa nacional española y el mismo número de
+  medios en cada bloque, para que ningún lado salga más solo por tener más
+  periódicos (un test lo vigila). Al añadir o quitar un medio hay que
+  mantener ese equilibrio. Los de `COVERAGE_SOURCES` solo cuentan para la
+  cobertura, no compiten por entrar en el briefing.
+- El Periódico, RTVE y EFE no tienen un RSS que sirva (vacío, abandonado
+  desde 2022 y error 500): se leen de su sitemap de Google News, que el
+  lector de feeds entiende igual que un RSS o un Atom.
 - El script hace una petición por autor sin concurrencia agresiva, a
   propósito, para ser respetuoso con los servidores.
 
