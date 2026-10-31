@@ -3940,7 +3940,9 @@ def run_weekend_digest() -> bool:
         return False
 
     try:
-        blitzhealth.main()
+        # Lista vacía a propósito: las opciones del bot (`--serve`) no son
+        # del Blitz Weekend, y aquí siempre se quiere el envío normal.
+        blitzhealth.main([])
     except SystemExit:
         # blitzhealth corta con sys.exit(1) cuando no hay contenido o Gemini
         # falla, y en esos casos ya ha avisado por Telegram por su cuenta.

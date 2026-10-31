@@ -1414,7 +1414,7 @@ class BlitzBriefTests(unittest.TestCase):
     def test_weekend_digest_survives_blitzhealth_sys_exit(self):
         fake_module = types.ModuleType("blitzhealth")
 
-        def fake_main():
+        def fake_main(argv=None):
             raise SystemExit(1)
 
         fake_module.main = fake_main

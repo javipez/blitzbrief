@@ -97,6 +97,20 @@ class HealthMainTests(unittest.TestCase):
         preview.assert_not_called()
         self.assertIn("¿Querías decir --preview-weekend?", stderr.getvalue())
 
+    def test_weekend_desde_telegram_no_lee_las_opciones_del_bot(self):
+        # /weekend llama a blitzhealth.main() dentro del proceso del bot,
+        # que se arrancó con --serve. Esa opción no es del Weekend y no
+        # debe hacer que se rechace: el digest tiene que llegar a generarse.
+        parada = RuntimeError("basta con saber que llegó hasta aquí")
+        with patch.object(bot.sys, "argv", ["blitzbrief_bot.py", "--serve"]), \
+             patch.object(health, "fetch_all_sources", side_effect=parada) as fetch, \
+             patch.object(bot, "send_telegram_message"), \
+             redirect_stderr(io.StringIO()) as stderr:
+            bot.run_weekend_digest()
+
+        fetch.assert_called_once()
+        self.assertNotIn("Opción desconocida", stderr.getvalue())
+
     def test_preview_weekend_sigue_funcionando(self):
         with patch.object(health.sys, "argv", ["blitzhealth.py", "--preview-weekend"]), \
              patch.object(health, "fetch_all_sources") as fetch, \
