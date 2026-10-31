@@ -4,7 +4,7 @@ Bot de Telegram que cada mañana te envía un **briefing de noticias generado co
 
 ## Qué hace
 
-- **Briefing de noticias con IA** — Recoge titulares de 16 fuentes (nacionales, internacionales, locales y deportivas), los procesa con Gemini 3 Flash y te envía un resumen categorizado
+- **Briefing de noticias con IA** — Recoge titulares de 15 fuentes (nacionales, internacionales, locales y deportivas), los procesa con Gemini 3 Flash y te envía un resumen categorizado
 - **Formato enriquecido de Telegram** — El briefing y el digest de columnistas usan Rich Messages cuando están disponibles, con fallback automático al formato HTML anterior
 - **Digest de columnistas** — Consulta las páginas de autor de El País, El Plural y feeds RSS para detectar artículos nuevos
 - **Blitz Weekend** — Cada domingo prepara un resumen semanal con salud/longevidad, columnas, lecturas largas y contexto
@@ -18,10 +18,24 @@ Bot de Telegram que cada mañana te envía un **briefing de noticias generado co
 | Categoría | Medios |
 |-----------|--------|
 | Nacional | El País, eldiario.es, ABC, La Vanguardia, El Español, El Confidencial |
-| Internacional | El Orden Mundial, BBC Mundo, France 24 Español, The Guardian, New York Times |
+| Internacional | BBC Mundo, France 24 Español, The Guardian, New York Times |
 | Local (Málaga) | Diario Sur, Málaga Hoy, La Opinión de Málaga |
 | Deportes | Marca, Diario AS |
 | Tecnología | TechCrunch IA, Hacker News, Simon Willison, 9to5Mac, OpenAI Blog, Google Gemini Blog, Anthropic News |
+| Solo cobertura | infoLibre, Cadena SER, El Periódico, RTVE, Europa Press, EFE, 20minutos, El Mundo, La Razón |
+
+Bajo cada noticia (salvo Deporte y Tech) el briefing muestra qué medios la
+publican, agrupados por inclinación (🔴 izquierda · ⚪ centro · 🔵 derecha),
+y avisa de un **punto ciego** cuando varios medios la destacan pero ninguno
+de un lado. Los medios "solo cobertura" sirven únicamente para ese recuento:
+no compiten por entrar en el briefing.
+
+El recuento usa solo prensa nacional española, con cinco medios por bloque
+para que ningún lado salga más solo por tener más periódicos en la lista:
+
+| 🔴 Izquierda | ⚪ Centro | 🔵 Derecha |
+|---|---|---|
+| El País, eldiario.es, infoLibre, Cadena SER, El Periódico | La Vanguardia, RTVE, Europa Press, EFE, 20minutos | ABC, El Mundo, La Razón, El Español, El Confidencial |
 
 ## Comandos del bot
 
