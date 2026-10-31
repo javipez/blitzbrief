@@ -16,6 +16,9 @@ domingos. Corre en producción como servicio systemd en el VPS `bots-01`.
 - Digest dominical (Blitz Weekend): `python blitzhealth.py`
   (modo `--preview-weekend`: prueba el digest semanal sin enviarlo a
   Telegram, mostrando la puntuación de relevancia de cada artículo)
+- Una opción que no existe (p. ej. `--preview-partido`) hace que el script
+  salga con error y sugiera la correcta, en vez de lanzar el envío normal.
+  Al añadir un modo nuevo, va en el diccionario `modes` de `main()`.
 - Tests: `pytest tests/ -v`
 - Instalar dependencias: `pip install -r requirements.txt`
 

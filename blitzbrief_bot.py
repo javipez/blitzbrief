@@ -42,6 +42,7 @@ from typing import Callable, Optional
 from zoneinfo import ZoneInfo
 
 import requests
+from cli_options import reject_unknown_options
 from content_security import (
     GEMINI_SYSTEM_INSTRUCTION, SecretRedactionFilter, clean_article, output_links_allowed,
     visible_soup, visible_text,
@@ -3939,7 +3940,9 @@ def run_weekend_digest() -> bool:
         return False
 
     try:
-        blitzhealth.main()
+        # Lista vacía a propósito: las opciones del bot (`--serve`) no son
+        # del Blitz Weekend, y aquí siempre se quiere el envío normal.
+        blitzhealth.main([])
     except SystemExit:
         # blitzhealth corta con sys.exit(1) cuando no hay contenido o Gemini
         # falla, y en esos casos ya ha avisado por Telegram por su cuenta.
@@ -4215,21 +4218,25 @@ def serve() -> None:
 
 
 def main():
+    # Opción → qué hace. Si llegan varias, gana la primera de esta lista.
+    # Sin ninguna se lanza el digest completo.
+    modes: dict[str, Callable[[], None]] = {
+        "--serve": serve,
+        "--register-commands": register_bot_commands,
+        "--evening": lambda: run_digest(notify_empty=True, mode="evening"),
+        "--morning": lambda: run_digest(mode="morning"),
+        "--preview-briefing": preview_news_briefing,
+        "--preview-partidos": preview_fixtures,
+    }
+    # Antes de nada: una opción mal escrita no debe acabar en un envío real
+    reject_unknown_options(modes, sys.argv[1:])
+
     load_authors()
-    if "--serve" in sys.argv:
-        serve()
-    elif "--register-commands" in sys.argv:
-        register_bot_commands()
-    elif "--evening" in sys.argv:
-        run_digest(notify_empty=True, mode="evening")
-    elif "--morning" in sys.argv:
-        run_digest(mode="morning")
-    elif "--preview-briefing" in sys.argv:
-        preview_news_briefing()
-    elif "--preview-partidos" in sys.argv:
-        preview_fixtures()
-    else:
-        run_digest(notify_empty=True, mode="full")
+    for option, run in modes.items():
+        if option in sys.argv:
+            run()
+            return
+    run_digest(notify_empty=True, mode="full")
 
 
 if __name__ == "__main__":

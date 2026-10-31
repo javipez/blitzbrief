@@ -29,6 +29,7 @@ from typing import Optional
 from zoneinfo import ZoneInfo
 
 import requests
+from cli_options import reject_unknown_options
 from content_security import (
     GEMINI_SYSTEM_INSTRUCTION, SecretRedactionFilter, clean_article, output_links_allowed,
     visible_text,
@@ -852,10 +853,23 @@ def preview_weekend_digest() -> None:
 # Main
 # ---------------------------------------------------------------------------
 
-def main() -> None:
+def main(argv: Optional[list[str]] = None) -> None:
+    """Punto de entrada del Blitz Weekend.
+
+    `argv` son las opciones. Si no se pasan, se leen de la línea de
+    comandos. El bot las pasa explícitamente (una lista vacía) cuando
+    alguien pide /weekend: si no, leería las del propio bot (`--serve`)
+    y las rechazaría como si fueran de este script.
+    """
+    if argv is None:
+        argv = sys.argv[1:]
+
+    # Una opción mal escrita no debe acabar enviando el digest de verdad
+    reject_unknown_options(["--preview-weekend"], argv)
+
     log.info("=== Blitz Weekend — Digest semanal ===")
 
-    if "--preview-weekend" in sys.argv:
+    if "--preview-weekend" in argv:
         preview_weekend_digest()
         return
 
