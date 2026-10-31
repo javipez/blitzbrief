@@ -2,7 +2,6 @@ import json
 import sys
 import types
 import unittest
-from collections import Counter
 from datetime import date, datetime, timedelta, timezone
 from unittest.mock import patch
 from zoneinfo import ZoneInfo
@@ -673,7 +672,7 @@ class BlitzBriefTests(unittest.TestCase):
 
         self.assertEqual(headlines[0]["url"], "https://example.com/noticia")
 
-    def test_news_headlines_fill_coverage_pool_without_changing_briefing(self):
+    def test_news_headlines_fill_link_pool_without_changing_briefing(self):
         items = "".join(
             f"""<item>
               <title>Titular {number}</title>
@@ -684,25 +683,22 @@ class BlitzBriefTests(unittest.TestCase):
         xml = f'<?xml version="1.0"?><rss><channel>{items}</channel></rss>'
         pool: list[dict] = []
 
-        with patch.dict(bot.NEWS_SOURCES, {"ABC": "feed", "Hacker News": "feed"}, clear=True), \
+        with patch.dict(bot.NEWS_SOURCES, {"El País": "feed", "ABC": "feed"}, clear=True), \
              patch.dict(bot.SPORTS_SOURCES, {}, clear=True), \
-             patch.dict(bot.COVERAGE_SOURCES, {"El Mundo": "feed"}, clear=True), \
              patch.object(bot, "datetime", FakeDateTime), \
              patch.object(bot, "_fetch_page", return_value=(xml, None)):
-            headlines = bot.fetch_news_headlines(coverage_pool=pool)
+            headlines = bot.fetch_news_headlines(link_pool=pool)
 
-        # El briefing sigue con 7 por medio y sin los medios de cobertura
+        # El briefing sigue con 7 por medio
         self.assertEqual(len(headlines), 14)
-        self.assertNotIn("El Mundo", {item["source"] for item in headlines})
-        # La cobertura mira los 10 de ABC y El Mundo, y nada de Hacker News
+        # Para el enlace se miran los 10 de El País y nada de ABC
         sources = [item["source"] for item in pool]
-        self.assertEqual(sources.count("ABC"), 10)
-        self.assertEqual(sources.count("El Mundo"), 10)
-        self.assertNotIn("Hacker News", sources)
+        self.assertEqual(sources.count("El País"), 10)
+        self.assertNotIn("ABC", sources)
 
-    def test_coverage_reads_google_news_sitemap(self):
-        # RTVE, EFE y El Periódico ya no dan un RSS útil, pero sí el sitemap
-        # de noticias que publican para Google News.
+    def test_fetch_feed_items_reads_google_news_sitemap(self):
+        # Hay medios (RTVE, EFE, El Periódico) sin un RSS útil que sí
+        # publican el sitemap de noticias para Google News.
         xml = """<?xml version="1.0"?>
         <urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9"
                 xmlns:news="http://www.google.com/schemas/sitemap-news/0.9"
@@ -723,30 +719,14 @@ class BlitzBriefTests(unittest.TestCase):
             <image:image><image:loc>https://img.rtve.es/foto.jpg</image:loc></image:image>
           </url>
         </urlset>"""
-        pool: list[dict] = []
+        cutoff = datetime(2026, 6, 1, 0, 0, tzinfo=timezone.utc)
 
-        with patch.dict(bot.NEWS_SOURCES, {}, clear=True), \
-             patch.dict(bot.SPORTS_SOURCES, {}, clear=True), \
-             patch.dict(bot.COVERAGE_SOURCES, {"RTVE": "sitemap"}, clear=True), \
-             patch.object(bot, "datetime", FakeDateTime), \
-             patch.object(bot, "_fetch_page", return_value=(xml, None)):
-            bot.fetch_news_headlines(coverage_pool=pool)
+        with patch.object(bot, "_fetch_page", return_value=(xml, None)):
+            items = bot._fetch_feed_items("RTVE", "sitemap", cutoff)
 
-        self.assertEqual(len(pool), 1)
-        self.assertEqual(pool[0]["source"], "RTVE")
-        self.assertEqual(pool[0]["title"], "El Gobierno aprueba el presupuesto")
-        self.assertEqual(pool[0]["url"], "https://www.rtve.es/noticias/nueva")
-
-    def test_source_leans_have_same_number_of_outlets_per_side(self):
-        counts = Counter(bot.SOURCE_LEANS.values())
-
-        self.assertEqual(set(counts), set(bot.LEAN_ICONS))
-        self.assertEqual(len(set(counts.values())), 1, counts)
-
-    def test_coverage_sources_all_have_lean(self):
-        missing = [name for name in bot.COVERAGE_SOURCES if name not in bot.SOURCE_LEANS]
-
-        self.assertEqual(missing, [])
+        self.assertEqual(len(items), 1)
+        self.assertEqual(items[0]["title"], "El Gobierno aprueba el presupuesto")
+        self.assertEqual(items[0]["url"], "https://www.rtve.es/noticias/nueva")
 
     def test_curate_news_headlines_groups_duplicate_titles(self):
         headlines = [
@@ -1009,19 +989,26 @@ class BlitzBriefTests(unittest.TestCase):
         self.assertNotIn("key=", captured["url"])
         self.assertEqual(captured["headers"]["x-goog-api-key"], "key")
 
-    def test_news_briefing_html_renders_coverage_line(self):
+    def test_news_briefing_html_renders_read_link(self):
         html = bot._format_news_briefing_html(
             "📰 BRIEFING",
-            "🌍 Internacional: Test\n   Cobertura: 🔴 El País · 🔵 <ABC>",
+            "🌍 Internacional: Test\n"
+            "   Leer en El País: La ONU <vota> https://elpais.com/a?x=1&y=2",
         )
 
-        self.assertIn("↳ 🔴 El País · 🔵 &lt;ABC&gt;", html)
-        self.assertNotIn("Cobertura:", html)
+        self.assertIn(
+            '↳ <a href="https://elpais.com/a?x=1&amp;y=2">'
+            "📖 El País · La ONU &lt;vota&gt;</a>",
+            html,
+        )
+        self.assertNotIn("Leer en", html)
 
     def test_news_briefing_rich_html_uses_structured_blocks(self):
         html = bot._format_news_briefing_rich_html(
             "📰 BRIEFING",
-            "🌍 Internacional: Test\n   Cobertura: 🔴 El País · 🔵 <ABC>",
+            "🌍 Internacional: Test\n"
+            "   Leer en eldiario.es: La ONU vota https://www.eldiario.es/a\n"
+            "⚽ Deporte: Gana el Madrid",
             [
                 ("📅", "Próximos partidos", ["Real Madrid - Málaga"]),
                 ("📺", "También en el 7 y en Vamos",
@@ -1032,7 +1019,11 @@ class BlitzBriefTests(unittest.TestCase):
         self.assertIn("<h1>📰 BRIEFING</h1>", html)
         self.assertIn("<h2>🌍 Internacional</h2>", html)
         self.assertIn("<p>Test</p>", html)
-        self.assertIn("<blockquote>🔴 El País · 🔵 &lt;ABC&gt;</blockquote>", html)
+        self.assertIn(
+            '<blockquote><a href="https://www.eldiario.es/a">'
+            "📖 eldiario.es · La ONU vota</a></blockquote>",
+            html,
+        )
         self.assertIn("<details open><summary>Próximos partidos</summary><ul>", html)
         self.assertIn("<li>Real Madrid - Málaga</li>", html)
         self.assertIn(
@@ -1041,103 +1032,196 @@ class BlitzBriefTests(unittest.TestCase):
         )
         self.assertIn("<li>🏀 Hoy 20:30 — Euroliga. Real Madrid - Baskonia</li>", html)
 
-    def test_news_briefing_html_renders_section_without_coverage(self):
-        html = bot._format_news_briefing_html(
-            "📰 BRIEFING",
-            "🌍 Internacional: Test sin línea de cobertura",
-        )
-
-        self.assertIn("Test sin línea de cobertura", html)
-        self.assertNotIn("↳", html)
-
-    def test_news_briefing_rich_html_renders_section_without_coverage(self):
+    def test_news_briefing_rich_html_separates_sections(self):
         html = bot._format_news_briefing_rich_html(
             "📰 BRIEFING",
-            "🌍 Internacional: Test sin línea de cobertura",
+            "🌍 Internacional: Uno\n📍 Málaga/Andalucía: Dos\n⚽ Deporte: Tres",
         )
 
-        self.assertIn("<h2>🌍 Internacional</h2>", html)
-        self.assertIn("<p>Test sin línea de cobertura</p>", html)
+        # Una raya entre secciones, ninguna antes de la primera
+        self.assertEqual(html.count("<hr/>"), 2)
+        self.assertLess(html.index("<h2>🌍 Internacional</h2>"), html.index("<hr/>"))
+        self.assertIn("<hr/>\n<h2>📍 Málaga/Andalucía</h2>", html)
         self.assertNotIn("<blockquote>", html)
 
-    def test_coverage_line_groups_sources_by_lean(self):
-        line = bot._coverage_line(["ABC", "El País", "La Vanguardia", "eldiario.es"])
+    def test_news_briefing_html_renders_section_without_link(self):
+        html = bot._format_news_briefing_html(
+            "📰 BRIEFING",
+            "🌍 Internacional: Test sin enlace",
+        )
 
-        self.assertEqual(line, "🔴 El País, eldiario.es · ⚪ La Vanguardia · 🔵 ABC")
+        self.assertIn("Test sin enlace", html)
+        self.assertNotIn("↳", html)
 
-    def test_coverage_line_flags_blindspot_when_one_side_is_missing(self):
-        line = bot._coverage_line(["El País", "eldiario.es", "La Vanguardia"])
-
-        self.assertIn("Punto ciego: no la destaca la prensa de derechas", line)
-
-    def test_coverage_line_needs_enough_sources_for_blindspot(self):
-        line = bot._coverage_line(["ABC", "El Español"])
-
-        self.assertEqual(line, "🔵 ABC, El Español")
-
-    def test_coverage_line_is_empty_for_sources_without_lean(self):
-        self.assertEqual(bot._coverage_line(["Marca Real Madrid", "OpenAI Blog"]), "")
-
-    def test_attach_coverage_lines_replaces_refs_with_sources(self):
+    def test_attach_read_links_uses_cited_el_pais_headline(self):
         headlines = [
+            {
+                "source": "ABC",
+                "sources": ["ABC"],
+                "title": "EE UU pide a la ONU respaldar la autonomía para el Sáhara",
+                "url": "https://www.abc.es/sahara",
+                "description": "",
+            },
             {
                 "source": "El País",
                 "sources": ["El País"],
                 "title": "Estados Unidos propone a la ONU avalar la autonomía del Sáhara",
-                "description": "",
-            },
-            {
-                "source": "Marca",
-                "sources": ["Marca"],
-                "title": "El Real Madrid gana al Fenerbahce",
-                "description": "",
-            },
-            {
-                "source": "ABC",
-                "sources": ["ABC", "El Español"],
-                "title": "EE UU pide a la ONU respaldar el plan marroquí de autonomía para el Sáhara",
+                "url": "https://elpais.com/sahara",
                 "description": "",
             },
         ]
         briefing = (
             "🌍 Internacional: Estados Unidos propone a la ONU avalar "
-            "la autonomía marroquí del Sáhara [#1, #3]"
+            "la autonomía marroquí del Sáhara [#1, #2]"
         )
 
-        result = bot._attach_coverage_lines(briefing, headlines)
+        with patch.object(bot, "_gemini_text") as gemini:
+            result = bot._attach_read_links(briefing, headlines)
 
+        gemini.assert_not_called()
         self.assertEqual(
             result.splitlines(),
             [
                 "🌍 Internacional: Estados Unidos propone a la ONU avalar "
                 "la autonomía marroquí del Sáhara",
-                "   Cobertura: 🔴 El País · 🔵 ABC, El Español",
-                bot.LEAN_LEGEND,
+                "   Leer en El País: Estados Unidos propone a la ONU avalar "
+                "la autonomía del Sáhara https://elpais.com/sahara",
             ],
         )
 
-    def test_coverage_line_summarizes_counts_when_many_sources(self):
-        line = bot._coverage_line([
-            "El País", "eldiario.es", "Cadena SER", "RTVE", "ABC", "El Mundo",
-        ])
+    def test_attach_read_links_prefers_el_pais_over_eldiario(self):
+        headlines = [
+            {
+                "source": "ABC",
+                "title": "Sánchez convoca elecciones generales anticipadas para el 15 de marzo",
+                "url": "https://www.abc.es/elecciones",
+                "description": "",
+            },
+        ]
+        pool = [
+            {"source": "eldiario.es", "title": "Sánchez convoca elecciones generales para marzo",
+             "url": "https://www.eldiario.es/elecciones", "description": ""},
+            {"source": "El País", "title": "Sánchez adelanta las elecciones generales a marzo",
+             "url": "https://elpais.com/elecciones", "description": ""},
+        ]
+        briefing = (
+            "🏛 España: Sánchez convoca elecciones generales anticipadas "
+            "para el 15 de marzo [#1]"
+        )
 
-        self.assertEqual(line, "6 medios: 🔴 3 · ⚪ 1 · 🔵 2")
+        with patch.object(bot, "_gemini_text", return_value="A: 1, 2"):
+            result = bot._attach_read_links(briefing, headlines, pool)
 
-    def test_coverage_candidates_rank_best_match_of_each_new_source_first(self):
+        self.assertIn("https://elpais.com/elecciones", result)
+        self.assertNotIn("eldiario.es", result)
+
+    def test_attach_read_links_falls_back_to_eldiario(self):
+        headlines = [
+            {
+                "source": "ABC",
+                "title": "Sánchez convoca elecciones generales anticipadas para el 15 de marzo",
+                "url": "https://www.abc.es/elecciones",
+                "description": "",
+            },
+        ]
+        pool = [
+            {"source": "El País", "title": "Sánchez descarta convocar elecciones anticipadas",
+             "url": "https://elpais.com/otra", "description": ""},
+            {"source": "eldiario.es", "title": "Sánchez convoca elecciones generales para marzo",
+             "url": "https://www.eldiario.es/elecciones", "description": ""},
+        ]
+        briefing = (
+            "🏛 España: Sánchez convoca elecciones generales anticipadas "
+            "para el 15 de marzo [#1]"
+        )
+
+        # Gemini descarta el de El País (otro hecho) y confirma el de eldiario.es
+        def confirm_eldiario(prompt, **_kwargs):
+            for line in prompt.splitlines():
+                if "generales para marzo" in line:
+                    return "A: " + line.strip().split(".")[0].removeprefix("A")
+            return "A: ninguno"
+
+        with patch.object(bot, "_gemini_text", side_effect=confirm_eldiario):
+            result = bot._attach_read_links(briefing, headlines, pool)
+
+        self.assertIn(
+            "   Leer en eldiario.es: Sánchez convoca elecciones generales para marzo "
+            "https://www.eldiario.es/elecciones",
+            result.splitlines(),
+        )
+
+    def test_attach_read_links_looks_for_el_pais_when_eldiario_is_cited(self):
+        # Gemini cita el de eldiario.es, pero El País también la tiene en el
+        # pool: manda la preferencia por El País.
+        headlines = [
+            {
+                "source": "eldiario.es",
+                "title": "Sánchez convoca elecciones generales anticipadas para el 15 de marzo",
+                "url": "https://www.eldiario.es/elecciones",
+                "description": "",
+            },
+        ]
+        pool = [
+            {"source": "eldiario.es", "title": "Sánchez convoca elecciones generales anticipadas para el 15 de marzo",
+             "url": "https://www.eldiario.es/elecciones", "description": ""},
+            {"source": "El País", "title": "Sánchez adelanta las elecciones generales a marzo",
+             "url": "https://elpais.com/elecciones", "description": ""},
+        ]
+        briefing = (
+            "🏛 España: Sánchez convoca elecciones generales anticipadas "
+            "para el 15 de marzo [#1]"
+        )
+
+        with patch.object(bot, "_gemini_text", return_value="A: 1") as gemini:
+            result = bot._attach_read_links(briefing, headlines, pool)
+
+        # Solo se le pregunta por El País: eldiario.es ya está confirmado
+        prompt = gemini.call_args.args[0]
+        self.assertIn("A1. Sánchez adelanta las elecciones generales a marzo", prompt)
+        self.assertNotIn("A2.", prompt)
+        self.assertIn("https://elpais.com/elecciones", result)
+        self.assertNotIn("https://www.eldiario.es/elecciones", result)
+
+    def test_attach_read_links_keeps_cited_eldiario_when_el_pais_is_not_confirmed(self):
+        headlines = [
+            {
+                "source": "eldiario.es",
+                "title": "Sánchez convoca elecciones generales anticipadas para el 15 de marzo",
+                "url": "https://www.eldiario.es/elecciones",
+                "description": "",
+            },
+        ]
+        pool = [
+            {"source": "El País", "title": "Sánchez descarta convocar elecciones anticipadas",
+             "url": "https://elpais.com/otra", "description": ""},
+        ]
+        briefing = (
+            "🏛 España: Sánchez convoca elecciones generales anticipadas "
+            "para el 15 de marzo [#1]"
+        )
+
+        for answer in ("", "A: ninguno"):
+            with self.subTest(answer=answer), \
+                 patch.object(bot, "_gemini_text", return_value=answer):
+                result = bot._attach_read_links(briefing, headlines, pool)
+
+            self.assertIn("https://www.eldiario.es/elecciones", result)
+            self.assertNotIn("https://elpais.com/otra", result)
+
+    def test_read_link_candidates_rank_best_match_of_each_source_first(self):
         news = "Estados Unidos propone a la ONU avalar la autonomía del Sáhara"
         pool = [
-            {"source": "El Mundo", "title": "La ONU debate el Sáhara", "description": ""},
-            {"source": "El Mundo", "title": "EE UU lleva a la ONU la autonomía del Sáhara", "description": ""},
-            {"source": "ABC", "title": "La ONU decide sobre el Sáhara", "description": ""},
-            {"source": "El País", "title": "La ONU y la autonomía del Sáhara", "description": ""},
-            {"source": "RTVE", "title": "Huelga de transporte en Madrid", "description": ""},
-            {"source": "Marca", "title": "El Sáhara y la ONU, en el Bernabéu", "description": ""},
+            {"source": "El País", "title": "La ONU debate el Sáhara", "url": "https://elpais.com/1"},
+            {"source": "El País", "title": "EE UU lleva a la ONU la autonomía del Sáhara", "url": "https://elpais.com/2"},
+            {"source": "eldiario.es", "title": "La ONU decide sobre el Sáhara", "url": "https://www.eldiario.es/3"},
+            {"source": "ABC", "title": "La ONU y la autonomía del Sáhara", "url": "https://www.abc.es/4"},
+            {"source": "El País", "title": "Huelga de transporte en Madrid", "url": "https://elpais.com/5"},
         ]
 
-        candidates = bot._coverage_candidates(news, ["El País"], pool)
+        candidates = bot._read_link_candidates(news, pool)
 
-        # Primero el mejor de cada medio y luego los segundos: así el tope
-        # de candidatos no deja fuera a un medio por los repetidos de otro.
+        # Primero el mejor de cada medio y luego los segundos; ABC no cuenta
         self.assertEqual(
             [item["title"] for item in candidates],
             [
@@ -1147,150 +1231,78 @@ class BlitzBriefTests(unittest.TestCase):
             ],
         )
 
-    def test_attach_coverage_lines_confirms_lower_ranked_match_of_a_source(self):
-        # El titular de El Mundo con más palabras en común cuenta otro
-        # hecho; el que sí es la misma noticia comparte menos palabras.
-        headlines = [
-            {
-                "source": "El País",
-                "sources": ["El País"],
-                "title": "Sánchez convoca elecciones generales anticipadas para el 15 de marzo",
-                "description": "",
-            },
-        ]
+    def test_read_link_candidates_skip_links_outside_the_outlet(self):
+        news = "Estados Unidos propone a la ONU avalar la autonomía del Sáhara"
         pool = [
-            {"source": "El Mundo", "title": "Sánchez descarta convocar elecciones anticipadas", "description": ""},
-            {"source": "El Mundo", "title": "El presidente adelanta las generales al 15 de marzo", "description": ""},
+            {"source": "El País", "title": "La ONU y la autonomía del Sáhara",
+             "url": "https://news.google.com/articles/abc"},
+            {"source": "El País", "title": "La ONU y el Sáhara",
+             "url": "http://elpais.com/sin-https"},
+            {"source": "El País", "title": "La autonomía del Sáhara, en la ONU",
+             "url": "https://cincodias.elpais.com/sahara"},
         ]
-        briefing = (
-            "🇪🇸 España: Sánchez convoca elecciones generales anticipadas "
-            "para el 15 de marzo [#1]"
-        )
 
-        with patch.object(bot, "_gemini_text", return_value="A: 2"):
-            result = bot._attach_coverage_lines(briefing, headlines, pool)
-
-        self.assertIn("   Cobertura: 🔴 El País · 🔵 El Mundo", result.splitlines())
-
-    def test_attach_coverage_lines_adds_sources_confirmed_from_pool(self):
-        headlines = [
-            {
-                "source": "El País",
-                "sources": ["El País"],
-                "title": "Estados Unidos propone a la ONU avalar la autonomía del Sáhara",
-                "description": "",
-            },
-        ]
-        pool = [
-            {"source": "El Mundo", "title": "EE UU pide a la ONU respaldar la autonomía del Sáhara", "description": ""},
-            {"source": "RTVE", "title": "La ONU vota sobre la misión del Sáhara en 2027", "description": ""},
-        ]
-        briefing = (
-            "🌍 Internacional: Estados Unidos propone a la ONU avalar "
-            "la autonomía del Sáhara [#1]"
-        )
-
-        # Gemini confirma el de El Mundo (A1) y descarta el de RTVE (A2)
-        with patch.object(bot, "_gemini_text", return_value="A: 1") as gemini:
-            result = bot._attach_coverage_lines(briefing, headlines, pool)
-
-        gemini.assert_called_once()
-        self.assertIn("   Cobertura: 🔴 El País · 🔵 El Mundo", result.splitlines())
-
-    def test_attach_coverage_lines_keeps_refs_when_confirmation_fails(self):
-        headlines = [
-            {
-                "source": "El País",
-                "sources": ["El País"],
-                "title": "Estados Unidos propone a la ONU avalar la autonomía del Sáhara",
-                "description": "",
-            },
-        ]
-        pool = [
-            {"source": "El Mundo", "title": "EE UU pide a la ONU respaldar la autonomía del Sáhara", "description": ""},
-        ]
-        briefing = (
-            "🌍 Internacional: Estados Unidos propone a la ONU avalar "
-            "la autonomía del Sáhara [#1]"
-        )
-
-        with patch.object(bot, "_gemini_text", return_value=""):
-            result = bot._attach_coverage_lines(briefing, headlines, pool)
-
-        self.assertIn("   Cobertura: 🔴 El País", result.splitlines())
-
-    def test_attach_coverage_lines_skips_blindspot_when_confirmation_fails(self):
-        headlines = [
-            {
-                "source": "El País",
-                "sources": ["El País", "eldiario.es", "La Vanguardia"],
-                "title": "Sánchez convoca elecciones generales anticipadas para el 15 de marzo",
-                "description": "",
-            },
-        ]
-        pool = [
-            {"source": "ABC", "title": "Sánchez convoca elecciones generales anticipadas", "description": ""},
-        ]
-        briefing = (
-            "🇪🇸 España: Sánchez convoca elecciones generales anticipadas "
-            "para el 15 de marzo [#1]"
-        )
-
-        # Sin respuesta de Gemini no se sabe si ABC la publicó: los medios
-        # citados se muestran, pero sin afirmar que la derecha la ignora.
-        with patch.object(bot, "_gemini_text", return_value=""):
-            result = bot._attach_coverage_lines(briefing, headlines, pool)
-
-        self.assertIn(
-            "   Cobertura: 🔴 El País, eldiario.es · ⚪ La Vanguardia",
-            result.splitlines(),
-        )
-
-    def test_attach_coverage_lines_keeps_blindspot_when_confirmation_says_none(self):
-        headlines = [
-            {
-                "source": "El País",
-                "sources": ["El País", "eldiario.es", "La Vanguardia"],
-                "title": "Sánchez convoca elecciones generales anticipadas para el 15 de marzo",
-                "description": "",
-            },
-        ]
-        pool = [
-            {"source": "ABC", "title": "Sánchez descarta convocar elecciones anticipadas", "description": ""},
-        ]
-        briefing = (
-            "🇪🇸 España: Sánchez convoca elecciones generales anticipadas "
-            "para el 15 de marzo [#1]"
-        )
-
-        with patch.object(bot, "_gemini_text", return_value="A: ninguno"):
-            result = bot._attach_coverage_lines(briefing, headlines, pool)
-
-        self.assertIn("Punto ciego", result)
-
-    def test_attach_coverage_lines_skips_sports_and_tech_sections(self):
-        headlines = [
-            {
-                "source": "El País",
-                "sources": ["El País", "ABC"],
-                "title": "El Real Madrid gana al Fenerbahce en la Euroliga",
-                "description": "",
-            },
-        ]
-        briefing = "⚽ Deporte: El Real Madrid gana al Fenerbahce en la Euroliga [#1]"
-
-        result = bot._attach_coverage_lines(briefing, headlines)
+        candidates = bot._read_link_candidates(news, pool)
 
         self.assertEqual(
-            result, "⚽ Deporte: El Real Madrid gana al Fenerbahce en la Euroliga"
+            [item["url"] for item in candidates],
+            ["https://cincodias.elpais.com/sahara"],
         )
 
-    def test_attach_coverage_lines_ignores_unrelated_or_unknown_refs(self):
+    def test_attach_read_links_without_confirmation_adds_no_link(self):
+        headlines = [
+            {
+                "source": "ABC",
+                "title": "Estados Unidos propone a la ONU avalar la autonomía del Sáhara",
+                "url": "https://www.abc.es/sahara",
+                "description": "",
+            },
+        ]
+        pool = [
+            {"source": "El País", "title": "EE UU pide a la ONU respaldar la autonomía del Sáhara",
+             "url": "https://elpais.com/sahara", "description": ""},
+        ]
+        briefing = (
+            "🌍 Internacional: Estados Unidos propone a la ONU avalar "
+            "la autonomía del Sáhara [#1]"
+        )
+
+        for answer in ("", "A: ninguno"):
+            with self.subTest(answer=answer), \
+                 patch.object(bot, "_gemini_text", return_value=answer):
+                result = bot._attach_read_links(briefing, headlines, pool)
+
+            self.assertEqual(
+                result,
+                "🌍 Internacional: Estados Unidos propone a la ONU avalar "
+                "la autonomía del Sáhara",
+            )
+
+    def test_attach_read_links_only_in_news_sections(self):
         headlines = [
             {
                 "source": "El País",
-                "sources": ["El País"],
                 "title": "El Real Madrid gana al Fenerbahce en la Euroliga",
+                "url": "https://elpais.com/deportes/madrid",
+                "description": "",
+            },
+        ]
+        briefing = (
+            "⚽ Deporte: El Real Madrid gana al Fenerbahce en la Euroliga [#1]\n"
+            "📍 Málaga/Andalucía: El Real Madrid gana al Fenerbahce en la Euroliga [#1]"
+        )
+
+        result = bot._attach_read_links(briefing, headlines)
+
+        self.assertNotIn("Leer en", result)
+        self.assertNotIn("[#1]", result)
+
+    def test_attach_read_links_ignores_unrelated_or_unknown_refs(self):
+        headlines = [
+            {
+                "source": "El País",
+                "title": "El Real Madrid gana al Fenerbahce en la Euroliga",
+                "url": "https://elpais.com/deportes/madrid",
                 "description": "",
             },
         ]
@@ -1300,7 +1312,7 @@ class BlitzBriefTests(unittest.TestCase):
             "   Por qué importa: Cambia el conflicto."
         )
 
-        result = bot._attach_coverage_lines(briefing, headlines)
+        result = bot._attach_read_links(briefing, headlines)
 
         self.assertEqual(
             result,
