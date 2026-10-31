@@ -40,11 +40,13 @@ Variables de entorno necesarias en local: `TELEGRAM_BOT_TOKEN`,
 - El scraping es de HTML, no de APIs oficiales: si un medio cambia su web,
   el parser correspondiente puede romperse y necesitar ajuste.
 - Los partidos salen de dos fuentes distintas: futbolenlatv.es (fútbol,
-  solo la portada: su robots.txt cierra `/baloncesto`) y la guía de
-  programación de Movistar+ (baloncesto de Euroliga y ACB en el dial 7 y
-  en Vamos). Si el baloncesto deja de aparecer, el log dice qué canales
-  devolvió la guía: se corrige añadiendo el nombre a
-  `MOVISTAR_BASIC_CHANNEL_NAMES`.
+  solo la portada: su robots.txt cierra `/baloncesto`) y la API JSON de la
+  guía de Movistar+ en `ottcache.dof6.com` (baloncesto de Euroliga y ACB
+  en el dial 7 y en Vamos). Esa API no está documentada oficialmente; la
+  referencia que funciona es github.com/Proyectos-Cantelar/guia-tv. Los
+  canales se buscan por número de dial (`MOVISTAR_BASIC_DIALS`), no por
+  nombre. La web `www.movistarplus.es/programacion…` NO sirve: devuelve
+  HTML o un 410.
 - Las marcas de los partidos dicen dónde se pueden ver, no si se pagan:
   ✅ en la tele (dial 7, Vamos y DAZN) y 💻 solo en el Mac (canales de
   LaLiga y Champions de Movistar). Es una peculiaridad de la suscripción

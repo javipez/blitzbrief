@@ -505,30 +505,38 @@ YOUTH_COMPETITION_PATTERN = re.compile(
 # ── Baloncesto en el 7 y en Vamos ──────────────────────────────────
 # futbolenlatv solo cubre fútbol y su robots.txt cierra /baloncesto, así
 # que para la Euroliga y la ACB se consulta la guía de programación de
-# Movistar+: es la fuente de quien emite, y con una petición por día
-# tenemos todo lo que dan en el 7 y en Vamos.
-# Ojo con la ruta: `/programacion/plus/<fecha>` devuelve un 410 porque la
-# web la interpreta como la ficha de un programa. La buena es
-# `/programacion-tv/<fecha>`, con `?v=json` para que responda en JSON.
-MOVISTAR_EPG_URL = "https://www.movistarplus.es/programacion-tv/{date}?v=json"
-
-# Nombres con los que la guía puede llamar a esos dos canales → cómo los
-# enseñamos nosotros. Se comparan normalizados (minúsculas, sin acentos).
-# Si algún día la guía usa otro nombre, basta con añadirlo aquí.
-MOVISTAR_BASIC_CHANNEL_NAMES: dict[str, str] = {
-    "movistar plus+": "Movistar Plus+ (M7)",
-    "movistar plus": "Movistar Plus+ (M7)",
-    "plus": "Movistar Plus+ (M7)",
-    "m7": "Movistar Plus+ (M7)",
-    "vamos": "Vamos (M8)",
-    "m+ vamos": "Vamos (M8)",
-    "movistar vamos": "Vamos (M8)",
-    "vamos por movistar plus+": "Vamos (M8)",
-    "m8": "Vamos (M8)",
+# Movistar+: es la fuente de quien emite.
+#
+# Es la API JSON con la que la propia web de Movistar+ pinta su parrilla
+# (sin clave ni registro). No está documentada oficialmente; la referencia
+# es el proyecto github.com/Proyectos-Cantelar/guia-tv, que la usa a diario.
+# Funciona en dos pasos: primero la lista de canales (para saber qué
+# código interno tienen el dial 7 y el 8) y luego la parrilla de cada uno.
+MOVISTAR_OTT_URL = "https://ottcache.dof6.com/movistarplus/webplayer/OTT"
+MOVISTAR_OTT_PARAMS: dict[str, str] = {
+    "version": "8",
+    "mdrm": "true",
+    "tlsstream": "true",
+    "demarcation": "18",
+}
+# Sin el Referer de su propia web la API puede negarse a responder
+MOVISTAR_OTT_HEADERS: dict[str, str] = {
+    "User-Agent": USER_AGENT,
+    "Referer": "https://www.movistarplus.es/programacion-tv",
+    "Accept": "application/json, text/plain, */*",
+    "Accept-Language": "es-ES,es;q=0.9",
 }
 
-# Solo interesan Euroliga y ACB. En la guía el título de la retransmisión
-# suele ser del tipo "Baloncesto: Euroliga. Real Madrid - Baskonia".
+# Los canales se identifican por su dial, que es justo lo que se marca en
+# el mando: más fiable que su nombre, que Movistar cambia cada pocos años.
+MOVISTAR_BASIC_DIALS: dict[int, str] = {
+    7: "Movistar Plus+ (M7)",
+    8: "Vamos (M8)",
+}
+
+# Solo interesan Euroliga y ACB. Se busca en el título y en el subtítulo
+# del programa juntos, porque la guía suele repartir la competición y el
+# partido entre los dos ("Euroliga" + "Real Madrid - Baskonia").
 BASKETBALL_COMPETITION_PATTERN = re.compile(
     r"euroliga|euroleague|\bacb\b|liga endesa", re.IGNORECASE
 )
@@ -2323,119 +2331,95 @@ def fetch_basic_football_highlights(
 
 
 # ── Baloncesto: Euroliga y ACB en el 7 o en Vamos ──────────────────
-# La guía de Movistar+ no es una API documentada, así que los nombres de
-# las claves se miran en varias formas: si mañana cambian de mayúsculas o
-# de idioma, el código sigue encontrando el dato en vez de romperse.
-_EPG_CHANNEL_NAME_KEYS = ("NOMBRE", "NOMBRE_CADENA", "DESCRIPCION", "nombre", "name")
-_EPG_PROGRAMMES_KEYS = ("PROGRAMAS", "programas", "programs", "items")
-_EPG_TITLE_KEYS = ("TITULO", "titulo", "title", "NOMBRE", "name")
-_EPG_START_KEYS = (
-    "HORA_INICIO", "FECHA_HORA_INICIO", "HORAINICIO",
-    "horaInicio", "startDate", "start",
-)
 
 
-def _first_value(data: dict, keys: tuple[str, ...]):
-    """Primer valor no vacío de entre varias claves posibles."""
-    for key in keys:
-        value = data.get(key)
-        if value not in (None, "", [], {}):
-            return value
-    return None
-
-
-def _epg_basic_channel_label(name: str) -> Optional[str]:
-    """Nombre del canal en la guía → etiqueta nuestra, o None si no nos sirve."""
-    return MOVISTAR_BASIC_CHANNEL_NAMES.get(_normalize_text(name))
-
-
-def _parse_epg_start(raw) -> Optional[datetime]:
-    """Convierte la hora de inicio de la guía a hora de Madrid.
-
-    La guía puede dar la hora como texto ("2026-10-30 21:00:00") o como
-    marca de tiempo numérica, y normalmente sin indicar la zona horaria.
-    Cuando no la indica se asume Madrid, que es desde donde se programa.
-    """
-    tz_madrid = ZoneInfo("Europe/Madrid")
-
-    if isinstance(raw, (int, float)) and not isinstance(raw, bool):
-        # Más de 10^11 solo puede ser milisegundos, no segundos.
-        seconds = raw / 1000 if abs(raw) > 10**11 else raw
-        return datetime.fromtimestamp(seconds, tz_madrid)
-
-    if not isinstance(raw, str) or not raw.strip():
-        return None
-
+def _fetch_movistar_json(path: str, **params):
+    """GET a la API de la guía de Movistar+. Devuelve el JSON o None si falla."""
     try:
-        parsed = datetime.fromisoformat(raw.strip().replace(" ", "T"))
-    except ValueError:
+        resp = requests.get(
+            f"{MOVISTAR_OTT_URL}/{path}",
+            params={**params, **MOVISTAR_OTT_PARAMS},
+            headers=MOVISTAR_OTT_HEADERS,
+            timeout=15,
+        )
+        resp.raise_for_status()
+        return resp.json()
+    except (requests.RequestException, ValueError) as e:
+        log.warning(f"[Baloncesto] Error al consultar '{path}' en Movistar+: {e}")
         return None
 
-    if parsed.tzinfo is None:
-        return parsed.replace(tzinfo=tz_madrid)
-    return parsed.astimezone(tz_madrid)
 
+def _movistar_basic_channels() -> dict[str, str]:
+    """Código interno de los canales del dial 7 y 8 → cómo los enseñamos.
 
-def _parse_epg_programmes(payload) -> list[dict]:
-    """Programas de M7 y Vamos dentro de la guía de un día.
-
-    La guía devuelve un diccionario de canales; de cada uno interesan su
-    nombre y su lista de programas. Si no aparece ninguno de nuestros dos
-    canales se deja constancia en el log de los nombres que sí venían:
-    es lo que hace falta para corregir `MOVISTAR_BASIC_CHANNEL_NAMES`.
+    La parrilla se pide por código de canal ("CodCadenaTv"), que no es
+    algo que sepamos de memoria. Lo sacamos de la lista de canales buscando
+    el que ocupa cada dial.
     """
-    channels = payload.get("data", payload) if isinstance(payload, dict) else payload
-    if isinstance(channels, dict):
-        channels = list(channels.values())
+    channels = _fetch_movistar_json("contents/channels")
     if not isinstance(channels, list):
-        log.warning("[Baloncesto] La guía de Movistar+ no tiene la forma esperada")
-        return []
+        return {}
 
-    programmes: list[dict] = []
-    channel_names: list[str] = []
-
+    found: dict[int, tuple[str, str]] = {}
     for channel in channels:
         if not isinstance(channel, dict):
             continue
-        name = _first_value(channel, _EPG_CHANNEL_NAME_KEYS)
-        if not isinstance(name, str):
+        try:
+            dial = int(channel.get("Dial"))
+        except (TypeError, ValueError):
             continue
-        channel_names.append(name)
+        code = channel.get("CodCadenaTv")
+        # Si hubiese dos canales en el mismo dial (HD y SD, por ejemplo),
+        # con el primero basta: emiten lo mismo.
+        if dial in MOVISTAR_BASIC_DIALS and code and dial not in found:
+            found[dial] = (code, MOVISTAR_BASIC_DIALS[dial])
 
-        label = _epg_basic_channel_label(name)
-        if label is None:
-            continue
-
-        for programme in _first_value(channel, _EPG_PROGRAMMES_KEYS) or []:
-            if not isinstance(programme, dict):
-                continue
-            title = _first_value(programme, _EPG_TITLE_KEYS)
-            start = _parse_epg_start(_first_value(programme, _EPG_START_KEYS))
-            if not isinstance(title, str) or start is None:
-                continue
-            programmes.append({"channel": label, "title": title, "start": start})
-
-    if not programmes and channel_names:
-        log.info(
-            "[Baloncesto] Ningún canal de casa en la guía. Canales recibidos: "
-            + ", ".join(sorted(set(channel_names))[:40])
+    missing = sorted(set(MOVISTAR_BASIC_DIALS) - set(found))
+    if missing:
+        log.warning(
+            f"[Baloncesto] La lista de Movistar+ no trae los diales {missing}"
         )
+    return {code: label for code, label in found.values()}
+
+
+def _epg_title(programme: dict) -> str:
+    """Título + subtítulo del programa, sin repetir lo que ya diga el título.
+
+    La guía suele poner la competición en "Titulo" y el partido en
+    "TituloEpisodio"; juntos quedan "Euroliga. Real Madrid - Baskonia".
+    """
+    title = (programme.get("Titulo") or "").strip()
+    episode = (programme.get("TituloEpisodio") or "").replace('"', "").strip()
+    if episode and _normalize_text(episode) not in _normalize_text(title):
+        return f"{title}. {episode}" if title else episode
+    return title
+
+
+def _fetch_epg_day(code: str, label: str, day: date) -> list[dict]:
+    """Programas de un canal en un día, con la hora ya en Madrid."""
+    data = _fetch_movistar_json(
+        "epg",
+        **{"from": f"{day.isoformat()}T00:00:00", "span": "1", "channel": code},
+    )
+    if not isinstance(data, list):
+        return []
+
+    tz_madrid = ZoneInfo("Europe/Madrid")
+    programmes: list[dict] = []
+    for programme in data:
+        if not isinstance(programme, dict):
+            continue
+        title = _epg_title(programme)
+        try:
+            # La hora viene en milisegundos desde 1970 (epoch), no en texto
+            start = datetime.fromtimestamp(
+                int(programme["FechaHoraInicio"]) / 1000, tz_madrid
+            )
+        except (KeyError, TypeError, ValueError):
+            continue
+        if title:
+            programmes.append({"channel": label, "title": title, "start": start})
     return programmes
-
-
-def _fetch_epg_day(day: date) -> list[dict]:
-    """Programas del 7 y de Vamos para un día concreto."""
-    url = MOVISTAR_EPG_URL.format(date=day.isoformat())
-    raw, err = _fetch_page(url)
-    if not raw:
-        log.warning(f"[Baloncesto] No se pudo descargar la guía de {day}: {err}")
-        return []
-    try:
-        payload = json.loads(raw)
-    except ValueError as exc:
-        log.warning(f"[Baloncesto] La guía de {day} no devolvió JSON: {exc}")
-        return []
-    return _parse_epg_programmes(payload)
 
 
 def _clean_basketball_title(title: str) -> str:
@@ -2447,11 +2431,17 @@ def _clean_basketball_title(title: str) -> str:
 def _basic_basketball_entries(
     now: datetime, programmes: Optional[list[dict]] = None
 ) -> list[tuple[datetime, str]]:
-    """Euroliga y ACB de hoy y mañana en el 7 o en Vamos."""
+    """Euroliga y ACB de hoy y mañana en el 7 o en Vamos.
+
+    Son cinco peticiones al día: la lista de canales y la parrilla de hoy
+    y de mañana de cada uno de los dos.
+    """
     if programmes is None:
         programmes = []
-        for days_ahead in range(FIXTURES_LOOKAHEAD_DAYS + 1):
-            programmes.extend(_fetch_epg_day(now.date() + timedelta(days=days_ahead)))
+        for code, label in _movistar_basic_channels().items():
+            for days_ahead in range(FIXTURES_LOOKAHEAD_DAYS + 1):
+                day = now.date() + timedelta(days=days_ahead)
+                programmes.extend(_fetch_epg_day(code, label, day))
 
     entries: list[tuple[datetime, str]] = []
     seen: set[tuple[str, datetime]] = set()
@@ -2465,7 +2455,9 @@ def _basic_basketball_entries(
         start = programme["start"]
         if not _within_lookahead(start, now):
             continue
-        # La guía repite el mismo partido si lo dan en los dos canales.
+        # El mismo partido puede salir dos veces: si lo dan en los dos
+        # canales, o si cruza la medianoche y aparece en la parrilla de
+        # ambos días.
         key = (_normalize_text(title), start)
         if key in seen:
             continue
