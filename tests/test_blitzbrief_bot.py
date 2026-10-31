@@ -1151,6 +1151,64 @@ class BlitzBriefTests(unittest.TestCase):
             result.splitlines(),
         )
 
+    def test_attach_read_links_looks_for_el_pais_when_eldiario_is_cited(self):
+        # Gemini cita el de eldiario.es, pero El País también la tiene en el
+        # pool: manda la preferencia por El País.
+        headlines = [
+            {
+                "source": "eldiario.es",
+                "title": "Sánchez convoca elecciones generales anticipadas para el 15 de marzo",
+                "url": "https://www.eldiario.es/elecciones",
+                "description": "",
+            },
+        ]
+        pool = [
+            {"source": "eldiario.es", "title": "Sánchez convoca elecciones generales anticipadas para el 15 de marzo",
+             "url": "https://www.eldiario.es/elecciones", "description": ""},
+            {"source": "El País", "title": "Sánchez adelanta las elecciones generales a marzo",
+             "url": "https://elpais.com/elecciones", "description": ""},
+        ]
+        briefing = (
+            "🏛 España: Sánchez convoca elecciones generales anticipadas "
+            "para el 15 de marzo [#1]"
+        )
+
+        with patch.object(bot, "_gemini_text", return_value="A: 1") as gemini:
+            result = bot._attach_read_links(briefing, headlines, pool)
+
+        # Solo se le pregunta por El País: eldiario.es ya está confirmado
+        prompt = gemini.call_args.args[0]
+        self.assertIn("A1. Sánchez adelanta las elecciones generales a marzo", prompt)
+        self.assertNotIn("A2.", prompt)
+        self.assertIn("https://elpais.com/elecciones", result)
+        self.assertNotIn("https://www.eldiario.es/elecciones", result)
+
+    def test_attach_read_links_keeps_cited_eldiario_when_el_pais_is_not_confirmed(self):
+        headlines = [
+            {
+                "source": "eldiario.es",
+                "title": "Sánchez convoca elecciones generales anticipadas para el 15 de marzo",
+                "url": "https://www.eldiario.es/elecciones",
+                "description": "",
+            },
+        ]
+        pool = [
+            {"source": "El País", "title": "Sánchez descarta convocar elecciones anticipadas",
+             "url": "https://elpais.com/otra", "description": ""},
+        ]
+        briefing = (
+            "🏛 España: Sánchez convoca elecciones generales anticipadas "
+            "para el 15 de marzo [#1]"
+        )
+
+        for answer in ("", "A: ninguno"):
+            with self.subTest(answer=answer), \
+                 patch.object(bot, "_gemini_text", return_value=answer):
+                result = bot._attach_read_links(briefing, headlines, pool)
+
+            self.assertIn("https://www.eldiario.es/elecciones", result)
+            self.assertNotIn("https://elpais.com/otra", result)
+
     def test_read_link_candidates_rank_best_match_of_each_source_first(self):
         news = "Estados Unidos propone a la ONU avalar la autonomía del Sáhara"
         pool = [

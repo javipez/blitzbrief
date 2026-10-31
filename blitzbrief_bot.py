@@ -1251,25 +1251,31 @@ def _attach_read_links(
                 cited.append(headline)
         sections.append((len(output) - 1, news_text, _best_read_link(cited)))
 
-    # Una sola llamada a Gemini para todas las secciones que aún no tienen
-    # enlace y sí candidatos. Si no contesta, se quedan sin enlace.
+    # Una sola llamada a Gemini para todas las secciones que aún pueden
+    # mejorar: las que no tienen enlace y las que lo tienen de eldiario.es,
+    # por si El País también publica la noticia. A estas últimas solo se les
+    # buscan medios preferidos al que ya tienen; si Gemini no contesta, se
+    # quedan como estaban.
     if link_pool:
-        pending = [
-            (index, _read_link_candidates(news_text, link_pool))
-            for index, (_, news_text, link) in enumerate(sections)
-            if link is None
-        ]
-        pending = [(index, found) for index, found in pending if found]
+        preference = list(READ_LINK_SOURCES)
+        pending: list[tuple[int, list[dict]]] = []
+        for index, (_, news_text, link) in enumerate(sections):
+            found = _read_link_candidates(news_text, link_pool)
+            if link is not None:
+                better = preference[: preference.index(link["source"])]
+                found = [item for item in found if item["source"] in better]
+            if found:
+                pending.append((index, found))
         if pending:
             confirmed = _confirm_same_event(
                 [(sections[index][1], found) for index, found in pending]
             )
             for (index, found), positions in zip(pending, confirmed):
-                if not positions:
-                    continue
-                position, news_text, _ = sections[index]
-                link = _best_read_link([found[p] for p in sorted(positions)])
-                sections[index] = (position, news_text, link)
+                position, news_text, link = sections[index]
+                options = [found[p] for p in sorted(positions or ())]
+                if link is not None:
+                    options.append(link)
+                sections[index] = (position, news_text, _best_read_link(options))
 
     # De abajo arriba, para que insertar una línea no descuadre las
     # posiciones de las secciones que quedan por procesar.
