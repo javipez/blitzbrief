@@ -54,16 +54,15 @@ Variables de entorno necesarias en local: `TELEGRAM_BOT_TOKEN`,
   ✅ en la tele (dial 7, Vamos y DAZN) y 💻 solo en el Mac (canales de
   LaLiga y Champions de Movistar). Es una peculiaridad de la suscripción
   del usuario, no una regla general de Movistar+.
-- Bajo cada noticia del briefing va una línea de cobertura por inclinación
-  (🔴 izquierda · ⚪ centro · 🔵 derecha), con los medios de
-  `SOURCE_LEANS`: solo prensa nacional española y el mismo número de
-  medios en cada bloque, para que ningún lado salga más solo por tener más
-  periódicos (un test lo vigila). Al añadir o quitar un medio hay que
-  mantener ese equilibrio. Los de `COVERAGE_SOURCES` solo cuentan para la
-  cobertura, no compiten por entrar en el briefing.
-- El Periódico, RTVE y EFE no tienen un RSS que sirva (vacío, abandonado
-  desde 2022 y error 500): se leen de su sitemap de Google News, que el
-  lector de feeds entiende igual que un RSS o un Atom.
+- Bajo las noticias de Internacional, España y Economía va un enlace para
+  leerla en El País (el usuario está suscrito) o, si no la tiene, en
+  eldiario.es. Ningún otro medio: el resto es ilegible por la publicidad.
+  El enlace sale siempre de sus feeds (Gemini solo confirma que es el
+  mismo hecho), y si no hay coincidencia la noticia va sin enlace.
+- La línea de cobertura por inclinación (izquierda/centro/derecha) se
+  probó y se quitó: no le aportaba nada al usuario. El lector de feeds
+  sigue entendiendo los sitemaps de Google News, por si algún medio deja
+  de mantener su RSS.
 - El script hace una petición por autor sin concurrencia agresiva, a
   propósito, para ser respetuoso con los servidores.
 

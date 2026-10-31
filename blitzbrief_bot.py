@@ -298,76 +298,23 @@ DEFAULT_SOURCE_PROFILE: dict[str, object] = {
     "weight": 0.75,
 }
 
-# ── Cobertura por inclinación (estilo Ground News) ────────────────
-# Simplificación de "orientation" en tres cubos para enseñar, bajo cada
-# noticia del briefing, qué medios la llevan en portada. Rojo = izquierda y
-# azul = derecha, como se leen los colores en la política española.
-#
-# Solo prensa nacional española y EL MISMO NÚMERO DE MEDIOS EN CADA BLOQUE:
-# si un lado tuviera más medios, saldría más a menudo solo por eso y el
-# recuento parecería un sesgo de los titulares cuando es de nuestra lista.
-# Fuera de aquí, y por tanto sin pintar:
-# - Internacionales (Guardian, NYT, BBC...): su "izquierda" y "derecha" no
-#   son las españolas, y además cargarían la balanza de un lado.
-# - Locales de Málaga: son todas de centro e inflarían ese bloque.
-# - Deportivas y tecnológicas: no tienen inclinación política.
-SOURCE_LEANS: dict[str, str] = {
-    "El País": "izquierda",
-    "eldiario.es": "izquierda",
-    "infoLibre": "izquierda",
-    "Cadena SER": "izquierda",
-    "El Periódico": "izquierda",
-    "La Vanguardia": "centro",
-    "RTVE": "centro",
-    "Europa Press": "centro",
-    "EFE": "centro",
-    "20minutos": "centro",
-    "ABC": "derecha",
-    "El Mundo": "derecha",
-    "La Razón": "derecha",
-    "El Español": "derecha",
-    "El Confidencial": "derecha",
+# ── Enlace para leer la noticia completa ─────────────────────────
+# Debajo de las noticias de estas secciones va un enlace a la misma noticia
+# en un medio que el usuario puede leer de verdad: El País (tiene
+# suscripción) y, si El País no la publica, eldiario.es. Ningún otro: la
+# publicidad del resto los hace ilegibles en el móvil. Si ninguno de los
+# dos la tiene, la noticia va sin enlace.
+READ_LINK_SECTIONS: tuple[str, ...] = ("Internacional", "España", "Economía")
+# Medio → dominio de sus enlaces, por orden de preferencia
+READ_LINK_SOURCES: dict[str, str] = {
+    "El País": "elpais.com",
+    "eldiario.es": "eldiario.es",
 }
-
-# Medios que solo sirven para contar quién publica cada noticia: NO entran
-# en la lista que Gemini usa para elegir el briefing. Sin prensa militante
-# (OKDiario, Libertad Digital, Público...) por decisión editorial.
-#
-# El Periódico, RTVE y EFE van por su sitemap de Google News: el RSS de
-# portada de El Periódico sale vacío, el de RTVE lleva parado desde 2022 y
-# el de EFE devuelve error 500. La Razón usa el feed que anuncia su propia
-# portada; /rss/portada.xml da 503.
-COVERAGE_SOURCES: dict[str, str] = {
-    "infoLibre": "https://www.infolibre.es/rss",
-    "Cadena SER": "https://cadenaser.com/arc/outboundfeeds/rss/?outputType=xml",
-    "El Periódico": "https://www.elperiodico.com/es/sitemapNews.xml",
-    "RTVE": "https://www.rtve.es/sitemaps/sitemaps-news.xml",
-    "Europa Press": "https://www.europapress.es/rss/rss.aspx",
-    "EFE": "https://efe.com/news-sitemap.xml",
-    "20minutos": "https://www.20minutos.es/rss/",
-    "El Mundo": "https://e00-elmundo.uecdn.es/elmundo/rss/portada.xml",
-    "La Razón": "https://www.larazon.es/?outputType=xml",
-}
-# Para la cobertura se mira más hondo en cada feed que para el briefing:
-# una noticia puede no estar entre los 7 últimos titulares de un medio y
-# aun así haberla publicado.
-COVERAGE_HEADLINES_PER_SOURCE = 25
+READ_LINK_PREFIX = "Leer en"
 # Candidatos por noticia que se le pasan a Gemini para confirmar
-MAX_COVERAGE_CANDIDATES = 15
+MAX_LINK_CANDIDATES = 15
 # Y como mucho estos de un mismo medio
-COVERAGE_CANDIDATES_PER_SOURCE = 3
-# Hasta este número de medios se escriben sus nombres; con más, la línea
-# sería kilométrica en el móvil y se resume en un recuento por bloque.
-COVERAGE_MAX_NAMES = 5
-LEAN_ICONS: dict[str, str] = {"izquierda": "🔴", "centro": "⚪", "derecha": "🔵"}
-LEAN_LEGEND = "🔴 izquierda · ⚪ centro · 🔵 derecha"
-COVERAGE_PREFIX = "Cobertura:"
-# En estas secciones el sesgo político no pinta nada: aunque un generalista
-# lleve el partido del Real Madrid, la línea de cobertura no se muestra.
-COVERAGE_SKIP_SECTIONS: tuple[str, ...] = ("⚽ Deporte", "🤖 Tech")
-# Con menos medios no se puede hablar de "punto ciego": que dos periódicos
-# coincidan en una noticia no dice nada del resto.
-MIN_SOURCES_FOR_BLINDSPOT = 3
+LINK_CANDIDATES_PER_SOURCE = 3
 
 RSS_FEED_FALLBACKS: dict[str, tuple[str, ...]] = {
     "https://www.error500.net/feed": ("https://www.error500.net/feed.xml",),
@@ -1105,7 +1052,7 @@ def _filter_ungrounded_tech_section(briefing: str, headlines: list[dict]) -> str
         if line.lstrip().startswith("🤖 Tech:"):
             block_lines = [line]
             next_index = index + 1
-            if next_index < len(lines) and COVERAGE_PREFIX in lines[next_index]:
+            if next_index < len(lines) and _parse_read_link(lines[next_index]):
                 block_lines.append(lines[next_index])
                 next_index += 1
 
@@ -1133,68 +1080,42 @@ def _filter_ungrounded_tech_section(briefing: str, headlines: list[dict]) -> str
 _BRIEFING_REFS_RE = re.compile(r"\s*\[\s*(#?\d+(?:\s*,\s*#?\d+)*)\s*\]\s*$")
 
 
-def _coverage_line(sources: list[str], flag_blindspot: bool = True) -> str:
-    """Agrupa las fuentes por inclinación: '🔴 El País · 🔵 ABC'.
-
-    Con muchos medios resume en recuento: '12 medios: 🔴 5 · ⚪ 3 · 🔵 4'.
-    Devuelve "" si ninguna fuente tiene inclinación política (deporte,
-    tecnología): ahí la línea no aportaría nada.
-
-    Con `flag_blindspot=False` no se avisa de punto ciego: se usa cuando no
-    se pudo comprobar si los medios que faltan publicaron la noticia.
-    """
-    by_lean: dict[str, list[str]] = {lean: [] for lean in LEAN_ICONS}
-    for source in sources:
-        lean = SOURCE_LEANS.get(source)
-        if lean and source not in by_lean[lean]:
-            by_lean[lean].append(source)
-
-    total = sum(len(names) for names in by_lean.values())
-    if not total:
-        return ""
-    if total > COVERAGE_MAX_NAMES:
-        counts = [
-            f"{LEAN_ICONS[lean]} {len(names)}"
-            for lean, names in by_lean.items()
-            if names
-        ]
-        line = f"{total} medios: " + " · ".join(counts)
-    else:
-        line = " · ".join(
-            f"{LEAN_ICONS[lean]} {', '.join(names)}"
-            for lean, names in by_lean.items()
-            if names
-        )
-
-    # Punto ciego: varios medios la destacan, pero ninguno de un lado.
-    left, right = by_lean["izquierda"], by_lean["derecha"]
-    if (
-        flag_blindspot
-        and total >= MIN_SOURCES_FOR_BLINDSPOT
-        and bool(left) != bool(right)
-    ):
-        missing = "derechas" if left else "izquierdas"
-        line += f" · ⚠️ Punto ciego: no la destaca la prensa de {missing}"
-    return line
+def _is_readable_link(item: dict) -> bool:
+    """El titular es de un medio que el usuario puede leer y su enlace
+    lleva a la web de ese medio (no a un redirector ni a otro dominio)."""
+    domain = READ_LINK_SOURCES.get(item.get("source", ""))
+    url = item.get("url", "")
+    if not domain or not url.startswith("https://"):
+        return False
+    host = urlparse(url).netloc.lower().removeprefix("www.")
+    return host == domain or host.endswith(f".{domain}")
 
 
-def _coverage_candidates(
-    news_text: str, known_sources: list[str], pool: list[dict]
-) -> list[dict]:
-    """Preselección barata (sin IA) de titulares del montón que podrían
-    contar la misma noticia: comparten al menos dos palabras clave con ella.
+def _best_read_link(items: list[dict]) -> Optional[dict]:
+    """El primero que se pueda leer, respetando el orden de preferencia
+    de READ_LINK_SOURCES (El País antes que eldiario.es)."""
+    for source in READ_LINK_SOURCES:
+        for item in items:
+            if item.get("source") == source and _is_readable_link(item):
+                return item
+    return None
 
-    Guarda varios por medio aún no contado: el que más palabras comparte
-    puede ser otro hecho del mismo tema ("Sánchez descarta elecciones"
-    frente a "adelanta las generales"), y si solo quedara ese, Gemini lo
-    descartaría y el medio se perdería. Van primero los mejores de cada
-    medio y luego los segundos, para que el tope no deje a nadie fuera.
+
+def _read_link_candidates(news_text: str, pool: list[dict]) -> list[dict]:
+    """Preselección barata (sin IA) de titulares de El País y eldiario.es
+    que podrían contar la misma noticia: comparten al menos dos palabras
+    clave con ella.
+
+    Guarda varios por medio: el que más palabras comparte puede ser otro
+    hecho del mismo tema ("Sánchez descarta elecciones" frente a "adelanta
+    las generales"), y si solo quedara ese, Gemini lo descartaría y el
+    enlace bueno se perdería. Van primero los mejores de cada medio y luego
+    los segundos, para que el tope no deje a ninguno fuera.
     """
     news_tokens = _briefing_tokens(news_text)
     by_source: dict[str, list[tuple[int, dict]]] = {}
     for item in pool:
-        source = item.get("source", "")
-        if source in known_sources or source not in SOURCE_LEANS:
+        if not _is_readable_link(item):
             continue
         item_tokens = _briefing_tokens(
             f"{item.get('title', '')} {item.get('description', '')}"
@@ -1202,19 +1123,19 @@ def _coverage_candidates(
         overlap = len(news_tokens & item_tokens)
         if overlap < 2:
             continue
-        by_source.setdefault(source, []).append((overlap, item))
+        by_source.setdefault(item["source"], []).append((overlap, item))
 
     ranked: list[tuple[int, int, dict]] = []
     for matches in by_source.values():
         matches.sort(key=lambda pair: pair[0], reverse=True)
-        top_matches = matches[:COVERAGE_CANDIDATES_PER_SOURCE]
+        top_matches = matches[:LINK_CANDIDATES_PER_SOURCE]
         for rank, (overlap, item) in enumerate(top_matches):
             ranked.append((rank, -overlap, item))
     ranked.sort(key=lambda entry: entry[:2])
-    return [item for _, _, item in ranked[:MAX_COVERAGE_CANDIDATES]]
+    return [item for _, _, item in ranked[:MAX_LINK_CANDIDATES]]
 
 
-def _confirm_coverage_candidates(
+def _confirm_same_event(
     sections: list[tuple[str, list[dict]]]
 ) -> list[Optional[set[int]]]:
     """Pregunta a Gemini qué candidatos cuentan el MISMO hecho que cada
@@ -1267,25 +1188,42 @@ def _confirm_coverage_candidates(
     return confirmed
 
 
-def _attach_coverage_lines(
+def _read_link_line(item: dict) -> str:
+    """Línea de texto del enlace, que luego pintan los formateadores."""
+    title = " ".join(item.get("title", "").split())
+    return f"   {READ_LINK_PREFIX} {item['source']}: {title} {item['url']}"
+
+
+def _parse_read_link(line: str) -> Optional[tuple[str, str, str]]:
+    """(medio, titular, url) de una línea de enlace, o None si no lo es."""
+    sources = "|".join(re.escape(source) for source in READ_LINK_SOURCES)
+    match = re.match(
+        rf"^{re.escape(READ_LINK_PREFIX)} ({sources}): (.*) (https://\S+)$",
+        line.strip(),
+    )
+    return match.groups() if match else None
+
+
+def _attach_read_links(
     briefing: str,
     headlines: list[dict],
-    coverage_pool: Optional[list[dict]] = None,
+    link_pool: Optional[list[dict]] = None,
 ) -> str:
-    """Cambia las referencias [#n] de Gemini por una línea de cobertura.
+    """Cambia las referencias [#n] de Gemini por un enlace para leer la
+    noticia en El País o, si no, en eldiario.es.
 
-    Gemini solo dice QUÉ titulares cuentan el mismo hecho; los medios y su
-    inclinación salen de nuestros datos, nunca del modelo, para que no
-    pueda inventarse quién cubre una noticia.
+    Gemini solo dice QUÉ titulares cuentan el mismo hecho; el enlace sale
+    siempre de nuestros feeds, nunca del modelo, para que no pueda
+    inventárselo.
 
-    Dos fuentes de medios para cada noticia:
+    Dos sitios donde buscarlo, por este orden:
     1. Los titulares de la lista del briefing que Gemini cita con [#n].
-    2. Si hay `coverage_pool`, los titulares de todos los medios
-       descargados, preseleccionados por palabras y confirmados por Gemini.
+    2. Si hay `link_pool`, todos los titulares de El País y eldiario.es,
+       preseleccionados por palabras y confirmados por Gemini.
     """
     output: list[str] = []
-    # Por cada sección: (posición de su línea en output, texto, medios)
-    sections: list[tuple[int, str, list[str]]] = []
+    # Por cada sección con enlace: (posición de su línea, texto, enlace)
+    sections: list[tuple[int, str, Optional[dict]]] = []
     for line in briefing.splitlines():
         # Formato antiguo: si Gemini lo cuela por inercia, fuera
         if line.strip().startswith("Por qué importa:"):
@@ -1297,60 +1235,47 @@ def _attach_coverage_lines(
 
         clean_line = line[: match.start()].rstrip()
         output.append(clean_line)
-        if clean_line.lstrip().startswith(COVERAGE_SKIP_SECTIONS):
+        label, _, news_text = clean_line.partition(":")
+        if not any(section in label for section in READ_LINK_SECTIONS):
             continue
-        # Solo el texto de la noticia, sin la etiqueta "🌍 Internacional:"
-        news_text = clean_line.split(":", 1)[-1]
 
-        sources: list[str] = []
+        cited: list[dict] = []
         for ref in re.findall(r"\d+", match.group(1)):
             index = int(ref) - 1
             if not 0 <= index < len(headlines):
                 continue
             headline = headlines[index]
             # Si el titular citado no se parece a lo redactado, es una
-            # referencia errónea: mejor sin línea que con medios falsos.
-            if not _briefing_text_matches_headline(news_text, headline):
-                continue
-            sources.extend(headline.get("sources") or [headline.get("source", "")])
-        sections.append((len(output) - 1, news_text, sources))
+            # referencia errónea: mejor sin enlace que con uno equivocado.
+            if _briefing_text_matches_headline(news_text, headline):
+                cited.append(headline)
+        sections.append((len(output) - 1, news_text, _best_read_link(cited)))
 
-    # Secciones con candidatos que Gemini no pudo confirmar: sin respuesta
-    # no se sabe si los medios que faltan la publicaron, así que no se
-    # avisa de punto ciego.
-    unchecked: set[int] = set()
-    if coverage_pool and sections:
-        candidates = [
-            _coverage_candidates(news_text, sources, coverage_pool)
-            for _, news_text, sources in sections
+    # Una sola llamada a Gemini para todas las secciones que aún no tienen
+    # enlace y sí candidatos. Si no contesta, se quedan sin enlace.
+    if link_pool:
+        pending = [
+            (index, _read_link_candidates(news_text, link_pool))
+            for index, (_, news_text, link) in enumerate(sections)
+            if link is None
         ]
-        # Una sola llamada a Gemini para todas las secciones con candidatos
-        pending = [index for index, found in enumerate(candidates) if found]
+        pending = [(index, found) for index, found in pending if found]
         if pending:
-            confirmed = _confirm_coverage_candidates(
-                [(sections[index][1], candidates[index]) for index in pending]
+            confirmed = _confirm_same_event(
+                [(sections[index][1], found) for index, found in pending]
             )
-            for index, positions in zip(pending, confirmed):
-                if positions is None:
-                    unchecked.add(index)
+            for (index, found), positions in zip(pending, confirmed):
+                if not positions:
                     continue
-                sections[index][2].extend(
-                    candidates[index][position]["source"]
-                    for position in sorted(positions)
-                )
+                position, news_text, _ = sections[index]
+                link = _best_read_link([found[p] for p in sorted(positions)])
+                sections[index] = (position, news_text, link)
 
     # De abajo arriba, para que insertar una línea no descuadre las
     # posiciones de las secciones que quedan por procesar.
-    any_coverage = False
-    for index in reversed(range(len(sections))):
-        position, _, sources = sections[index]
-        coverage = _coverage_line(sources, flag_blindspot=index not in unchecked)
-        if coverage:
-            output.insert(position + 1, f"   {COVERAGE_PREFIX} {coverage}")
-            any_coverage = True
-
-    if any_coverage:
-        output.append(LEAN_LEGEND)
+    for position, _, link in reversed(sections):
+        if link is not None:
+            output.insert(position + 1, _read_link_line(link))
     return "\n".join(output)
 
 
@@ -2417,7 +2342,7 @@ def _fetch_feed_items(
 
 
 def fetch_news_headlines(
-    max_per_source: int = 7, coverage_pool: Optional[list[dict]] = None
+    max_per_source: int = 7, link_pool: Optional[list[dict]] = None
 ) -> list[dict]:
     """Recoge titulares recientes de todas las fuentes de noticias.
 
@@ -2425,10 +2350,10 @@ def fetch_news_headlines(
     límite menor para que Gemini elija el titular deportivo más relevante
     junto al resto de categorías, en lugar de listarlos en bruto.
 
-    Si se pasa `coverage_pool`, se rellena además con los titulares que
-    sirven para medir la cobertura por inclinación: muchos más por medio
-    (no solo los 7 del briefing) y también los de COVERAGE_SOURCES. Se
-    aprovecha la misma descarga para no pedir dos veces cada feed.
+    Si se pasa `link_pool`, se rellena además con TODOS los titulares del
+    día de El País y eldiario.es (no solo los 7 del briefing), donde se
+    busca el enlace de cada noticia. Se aprovecha la misma descarga para
+    no pedir dos veces cada feed.
     """
     headlines: list[dict] = []
     cutoff = datetime.now(timezone.utc) - timedelta(hours=24)
@@ -2445,17 +2370,8 @@ def fetch_news_headlines(
         headlines.extend(selected)
         log.info(f"[Briefing] {source_name}: {len(selected)} titulares")
 
-        if coverage_pool is not None and source_name in SOURCE_LEANS:
-            coverage_pool.extend(items[:COVERAGE_HEADLINES_PER_SOURCE])
-
-    if coverage_pool is not None:
-        for source_name, feed_url in COVERAGE_SOURCES.items():
-            items = _fetch_feed_items(source_name, feed_url, cutoff)
-            if items is None:
-                continue
-            selected = items[:COVERAGE_HEADLINES_PER_SOURCE]
-            coverage_pool.extend(selected)
-            log.info(f"[Cobertura] {source_name}: {len(selected)} titulares")
+        if link_pool is not None and source_name in READ_LINK_SOURCES:
+            link_pool.extend(items)
 
     return headlines
 
@@ -3360,12 +3276,12 @@ def send_box_workouts_reply() -> bool:
 
 
 def generate_news_briefing(
-    headlines: list[dict], coverage_pool: Optional[list[dict]] = None
+    headlines: list[dict], link_pool: Optional[list[dict]] = None
 ) -> Optional[str]:
     """Envía los titulares a Gemini 3 Flash para generar un briefing categorizado.
 
-    `coverage_pool` son los titulares de todos los medios con inclinación
-    (ver fetch_news_headlines): se usan solo para la línea de cobertura.
+    `link_pool` son todos los titulares de El País y eldiario.es (ver
+    fetch_news_headlines): se usan solo para buscar el enlace de cada noticia.
     """
     if not GEMINI_API_KEY:
         log.error("Falta GEMINI_API_KEY para generar el briefing.")
@@ -3379,7 +3295,7 @@ def generate_news_briefing(
 
     # Preparar los titulares como texto
     # Cada titular lleva un número (#1, #2...) para que Gemini diga cuáles
-    # ha usado y podamos pintar debajo qué medios cubren la noticia.
+    # ha usado y podamos buscar debajo el enlace para leer la noticia.
     headlines_text = ""
     for number, h in enumerate(headlines, start=1):
         sources = ", ".join(h.get("sources") or [h["source"]])
@@ -3479,7 +3395,7 @@ TITULARES (única fuente válida):
                     if not output_links_allowed(text, [h.get("url", "") for h in headlines]):
                         log.warning("[Briefing] Respuesta descartada: enlace no autorizado.")
                         return None
-                    text = _attach_coverage_lines(text, headlines, coverage_pool)
+                    text = _attach_read_links(text, headlines, link_pool)
                     return _filter_ungrounded_tech_section(text, headlines)
             log.error(f"[Briefing] Respuesta inesperada de Gemini: {data}")
         except requests.RequestException as e:
@@ -3495,8 +3411,8 @@ TITULARES (única fuente válida):
 def send_news_briefing() -> bool:
     """Genera y envía el briefing matutino: titulares del día + partidos."""
     log.info("[Briefing] Recopilando titulares...")
-    coverage_pool: list[dict] = []
-    headlines = fetch_news_headlines(coverage_pool=coverage_pool)
+    link_pool: list[dict] = []
+    headlines = fetch_news_headlines(link_pool=link_pool)
 
     if not headlines:
         log.info("[Briefing] No se obtuvieron titulares.")
@@ -3507,7 +3423,7 @@ def send_news_briefing() -> bool:
         f"[Briefing] {len(headlines)} titulares recopilados; "
         f"{len(curated_headlines)} tras curación. Generando resumen..."
     )
-    briefing = generate_news_briefing(curated_headlines, coverage_pool)
+    briefing = generate_news_briefing(curated_headlines, link_pool)
 
     now = datetime.now(ZoneInfo("Europe/Madrid"))
     date_str = now.strftime("%d/%m/%Y")
@@ -3546,8 +3462,8 @@ def send_news_briefing() -> bool:
 def preview_news_briefing() -> None:
     """Genera el briefing y lo imprime en pantalla, sin enviarlo a Telegram."""
     log.info("[Briefing] Recopilando titulares (modo preview)...")
-    coverage_pool: list[dict] = []
-    headlines = fetch_news_headlines(coverage_pool=coverage_pool)
+    link_pool: list[dict] = []
+    headlines = fetch_news_headlines(link_pool=link_pool)
 
     if not headlines:
         print("No se obtuvieron titulares.")
@@ -3558,7 +3474,7 @@ def preview_news_briefing() -> None:
         f"{len(headlines)} titulares recopilados; "
         f"{len(curated_headlines)} tras curación.\n"
     )
-    briefing = generate_news_briefing(curated_headlines, coverage_pool)
+    briefing = generate_news_briefing(curated_headlines, link_pool)
 
     now = datetime.now(ZoneInfo("Europe/Madrid"))
     date_str = now.strftime("%d/%m/%Y")
@@ -3641,13 +3557,20 @@ def _format_news_briefing_rich_html(
         stripped = line.strip()
         if not stripped:
             return
-        if stripped.startswith(COVERAGE_PREFIX):
-            # Los iconos y la leyenda ya explican la línea: sin etiqueta
-            coverage = stripped.removeprefix(COVERAGE_PREFIX).strip()
-            blocks.append(f"<blockquote>{html_escape(coverage)}</blockquote>")
+        link = _parse_read_link(stripped)
+        if link:
+            source, title, url = link
+            blocks.append(
+                f'<blockquote><a href="{html_escape(url, quote=True)}">'
+                f"📖 {html_escape(source)} · {html_escape(title)}</a></blockquote>"
+            )
             return
         if ":" in stripped and not stripped.startswith("http"):
             title, body = stripped.split(":", 1)
+            # Una raya entre secciones: las que no llevan enlace quedarían
+            # pegadas a la siguiente y el briefing perdería el ritmo.
+            if any(block.startswith("<h2>") for block in blocks):
+                blocks.append("<hr/>")
             blocks.append(f"<h2>{html_escape(title.strip())}</h2>")
             if body.strip():
                 blocks.append(f"<p>{html_escape(body.strip())}</p>")
@@ -3681,9 +3604,13 @@ def _format_news_briefing_html(
     for line in text.splitlines():
         stripped = line.lstrip()
         indent = line[: len(line) - len(stripped)]
-        if stripped.startswith(COVERAGE_PREFIX):
-            coverage = stripped.removeprefix(COVERAGE_PREFIX).strip()
-            formatted_lines.append(f"{html_escape(indent)}↳ {html_escape(coverage)}")
+        link = _parse_read_link(stripped)
+        if link:
+            source, title, url = link
+            formatted_lines.append(
+                f'{html_escape(indent)}↳ <a href="{html_escape(url, quote=True)}">'
+                f"📖 {html_escape(source)} · {html_escape(title)}</a>"
+            )
         else:
             formatted_lines.append(html_escape(line))
     return "\n".join(formatted_lines)

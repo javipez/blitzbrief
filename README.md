@@ -22,20 +22,12 @@ Bot de Telegram que cada mañana te envía un **briefing de noticias generado co
 | Local (Málaga) | Diario Sur, Málaga Hoy, La Opinión de Málaga |
 | Deportes | Marca, Diario AS |
 | Tecnología | TechCrunch IA, Hacker News, Simon Willison, 9to5Mac, OpenAI Blog, Google Gemini Blog, Anthropic News |
-| Solo cobertura | infoLibre, Cadena SER, El Periódico, RTVE, Europa Press, EFE, 20minutos, El Mundo, La Razón |
 
-Bajo cada noticia (salvo Deporte y Tech) el briefing muestra qué medios la
-publican, agrupados por inclinación (🔴 izquierda · ⚪ centro · 🔵 derecha),
-y avisa de un **punto ciego** cuando varios medios la destacan pero ninguno
-de un lado. Los medios "solo cobertura" sirven únicamente para ese recuento:
-no compiten por entrar en el briefing.
-
-El recuento usa solo prensa nacional española, con cinco medios por bloque
-para que ningún lado salga más solo por tener más periódicos en la lista:
-
-| 🔴 Izquierda | ⚪ Centro | 🔵 Derecha |
-|---|---|---|
-| El País, eldiario.es, infoLibre, Cadena SER, El Periódico | La Vanguardia, RTVE, Europa Press, EFE, 20minutos | ABC, El Mundo, La Razón, El Español, El Confidencial |
+Debajo de las noticias de Internacional, España y Economía va un enlace
+para leerla entera en **El País** o, si El País no la publica, en
+**eldiario.es**. Ningún otro medio: el resto mete tanta publicidad que no
+se puede leer en el móvil. Si ninguno de los dos tiene la noticia, va sin
+enlace. Las secciones van separadas por una raya fina.
 
 ## Comandos del bot
 
