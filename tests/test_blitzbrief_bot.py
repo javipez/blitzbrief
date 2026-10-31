@@ -2,6 +2,7 @@ import json
 import sys
 import types
 import unittest
+from collections import Counter
 from datetime import date, datetime, timedelta, timezone
 from unittest.mock import patch
 from zoneinfo import ZoneInfo
@@ -699,6 +700,12 @@ class BlitzBriefTests(unittest.TestCase):
         self.assertEqual(sources.count("El Mundo"), 10)
         self.assertNotIn("Hacker News", sources)
 
+    def test_source_leans_have_same_number_of_outlets_per_side(self):
+        counts = Counter(bot.SOURCE_LEANS.values())
+
+        self.assertEqual(set(counts), set(bot.LEAN_ICONS))
+        self.assertEqual(len(set(counts.values())), 1, counts)
+
     def test_coverage_sources_all_have_lean(self):
         missing = [name for name in bot.COVERAGE_SOURCES if name not in bot.SOURCE_LEANS]
 
@@ -1013,7 +1020,7 @@ class BlitzBriefTests(unittest.TestCase):
         self.assertEqual(line, "🔴 El País, eldiario.es · ⚪ La Vanguardia · 🔵 ABC")
 
     def test_coverage_line_flags_blindspot_when_one_side_is_missing(self):
-        line = bot._coverage_line(["El País", "eldiario.es", "The Guardian"])
+        line = bot._coverage_line(["El País", "eldiario.es", "La Vanguardia"])
 
         self.assertIn("Punto ciego: no la destaca la prensa de derechas", line)
 

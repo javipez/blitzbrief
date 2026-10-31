@@ -309,31 +309,30 @@ DEFAULT_SOURCE_PROFILE: dict[str, object] = {
 # ── Cobertura por inclinación (estilo Ground News) ────────────────
 # Simplificación de "orientation" en tres cubos para enseñar, bajo cada
 # noticia del briefing, qué medios la llevan en portada. Rojo = izquierda y
-# azul = derecha, como se leen los colores en la política española. Las
-# fuentes que no aparecen aquí (deportivas, tecnológicas) no tienen
-# inclinación política y no se pintan.
+# azul = derecha, como se leen los colores en la política española.
+#
+# Solo prensa nacional española y EL MISMO NÚMERO DE MEDIOS EN CADA BLOQUE:
+# si un lado tuviera más medios, saldría más a menudo solo por eso y el
+# recuento parecería un sesgo de los titulares cuando es de nuestra lista.
+# Fuera de aquí, y por tanto sin pintar:
+# - Internacionales (Guardian, NYT, BBC...): su "izquierda" y "derecha" no
+#   son las españolas, y además cargarían la balanza de un lado.
+# - Locales de Málaga: son todas de centro e inflarían ese bloque.
+# - Deportivas y tecnológicas: no tienen inclinación política.
 SOURCE_LEANS: dict[str, str] = {
     "El País": "izquierda",
     "eldiario.es": "izquierda",
     "infoLibre": "izquierda",
     "Cadena SER": "izquierda",
     "El Periódico": "izquierda",
-    "The Guardian": "izquierda",
-    "New York Times": "izquierda",
     "La Vanguardia": "centro",
     "RTVE": "centro",
     "Europa Press": "centro",
+    "EFE": "centro",
     "20minutos": "centro",
-    "Diario Sur": "centro",
-    "La Opinión de Málaga": "centro",
-    "Málaga Hoy": "centro",
-    "El Orden Mundial": "centro",
-    "BBC Mundo": "centro",
-    "France 24 Español": "centro",
     "ABC": "derecha",
     "El Mundo": "derecha",
     "La Razón": "derecha",
-    "El Debate": "derecha",
     "El Español": "derecha",
     "El Confidencial": "derecha",
 }
@@ -347,10 +346,10 @@ COVERAGE_SOURCES: dict[str, str] = {
     "El Periódico": "https://www.elperiodico.com/es/rss/rss_portada.xml",
     "RTVE": "https://api2.rtve.es/rss/temas_noticias.xml",
     "Europa Press": "https://www.europapress.es/rss/rss.aspx",
+    "EFE": "https://efe.com/feed/",
     "20minutos": "https://www.20minutos.es/rss/",
     "El Mundo": "https://e00-elmundo.uecdn.es/elmundo/rss/portada.xml",
     "La Razón": "https://www.larazon.es/rss/portada.xml",
-    "El Debate": "https://www.eldebate.com/rss/home.xml",
 }
 # Para la cobertura se mira más hondo en cada feed que para el briefing:
 # una noticia puede no estar entre los 7 últimos titulares de un medio y
