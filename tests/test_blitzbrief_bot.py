@@ -1031,6 +1031,23 @@ class BlitzBriefTests(unittest.TestCase):
             ],
         )
 
+    def test_attach_coverage_lines_skips_sports_and_tech_sections(self):
+        headlines = [
+            {
+                "source": "El País",
+                "sources": ["El País", "ABC"],
+                "title": "El Real Madrid gana al Fenerbahce en la Euroliga",
+                "description": "",
+            },
+        ]
+        briefing = "⚽ Deporte: El Real Madrid gana al Fenerbahce en la Euroliga [#1]"
+
+        result = bot._attach_coverage_lines(briefing, headlines)
+
+        self.assertEqual(
+            result, "⚽ Deporte: El Real Madrid gana al Fenerbahce en la Euroliga"
+        )
+
     def test_attach_coverage_lines_ignores_unrelated_or_unknown_refs(self):
         headlines = [
             {

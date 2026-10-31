@@ -331,6 +331,9 @@ SOURCE_LEANS: dict[str, str] = {
 LEAN_ICONS: dict[str, str] = {"izquierda": "🔴", "centro": "⚪", "derecha": "🔵"}
 LEAN_LEGEND = "🔴 izquierda · ⚪ centro · 🔵 derecha"
 COVERAGE_PREFIX = "Cobertura:"
+# En estas secciones el sesgo político no pinta nada: aunque un generalista
+# lleve el partido del Real Madrid, la línea de cobertura no se muestra.
+COVERAGE_SKIP_SECTIONS: tuple[str, ...] = ("⚽ Deporte", "🤖 Tech")
 # Con menos medios no se puede hablar de "punto ciego": que dos periódicos
 # coincidan en una noticia no dice nada del resto.
 MIN_SOURCES_FOR_BLINDSPOT = 3
@@ -1063,6 +1066,8 @@ def _attach_coverage_lines(briefing: str, headlines: list[dict]) -> str:
 
         clean_line = line[: match.start()].rstrip()
         output.append(clean_line)
+        if clean_line.lstrip().startswith(COVERAGE_SKIP_SECTIONS):
+            continue
         # Solo el texto de la noticia, sin la etiqueta "🌍 Internacional:"
         news_text = clean_line.split(":", 1)[-1]
 
