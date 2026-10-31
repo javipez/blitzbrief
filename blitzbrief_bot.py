@@ -93,7 +93,6 @@ NEWS_SOURCES: dict[str, str] = {
     "La Opinión de Málaga": "https://www.laopiniondemalaga.es/rss/",
     "El Español": "https://www.elespanol.com/rss/",
     "Málaga Hoy": "https://www.malagahoy.es/rss/",
-    "El Orden Mundial": "https://elordenmundial.com/feed/",
     "BBC Mundo": "https://feeds.bbci.co.uk/mundo/rss.xml",
     "France 24 Español": "https://www.france24.com/es/rss",
     "The Guardian": "https://www.theguardian.com/world/rss",
@@ -174,14 +173,6 @@ SOURCE_PROFILES: dict[str, dict] = {
         "scope": "local",
         "type": "local",
         "weight": 0.9,
-    },
-    "El Orden Mundial": {
-        "orientation": "análisis / internacionalista",
-        "reliability": "alta",
-        "sensationalism": "bajo",
-        "scope": "internacional",
-        "type": "análisis",
-        "weight": 1.1,
     },
     "BBC Mundo": {
         "orientation": "institucional / internacional",
