@@ -541,6 +541,11 @@ BASKETBALL_COMPETITION_PATTERN = re.compile(
     r"euroliga|euroleague|\bacb\b|liga endesa", re.IGNORECASE
 )
 
+# La guía no distingue directo de diferido, y por las mañanas Vamos repite
+# partidos de días anteriores. Como la Euroliga y la ACB casi nunca juegan
+# antes del mediodía, lo que empiece antes de esta hora se da por diferido.
+BASKETBALL_EARLIEST_LIVE_HOUR = 12
+
 # Alrededor de cada partido hay previas, resúmenes y tertulias. Interesa
 # el partido, no el programa de estudio que lo rodea.
 BASKETBALL_STUDIO_PATTERN = re.compile(
@@ -2453,6 +2458,8 @@ def _basic_basketball_entries(
         if BASKETBALL_STUDIO_PATTERN.search(title):
             continue
         start = programme["start"]
+        if start.hour < BASKETBALL_EARLIEST_LIVE_HOUR:
+            continue
         if not _within_lookahead(start, now):
             continue
         # El mismo partido puede salir dos veces: si lo dan en los dos

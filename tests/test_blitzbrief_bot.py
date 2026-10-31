@@ -1861,12 +1861,13 @@ class BlitzBriefTests(unittest.TestCase):
         return fake
 
     def test_baloncesto_solo_de_euroliga_y_acb_en_el_7_y_vamos(self):
-        hoy = datetime.now(ZoneInfo("Europe/Madrid")) + timedelta(hours=3)
+        partido = (datetime.now(ZoneInfo("Europe/Madrid")) + timedelta(days=1)).replace(
+            hour=19, minute=0, second=0, microsecond=0)
         movistar = self._movistar([
-            (8, "Vamos", [("Euroliga", "Real Madrid - Baskonia", hoy)]),
-            (7, "Movistar Plus+", [("Liga Endesa", "Unicaja - Barça", hoy)]),
-            (63, "Movistar Deportes", [("Euroliga", "Fenerbahce - Milán", hoy)]),
-            (54, "M+ LaLiga", [("LaLiga EA Sports", "Betis - Sevilla", hoy)]),
+            (8, "Vamos", [("Euroliga", "Real Madrid - Baskonia", partido)]),
+            (7, "Movistar Plus+", [("Liga Endesa", "Unicaja - Barça", partido)]),
+            (63, "Movistar Deportes", [("Euroliga", "Fenerbahce - Milán", partido)]),
+            (54, "M+ LaLiga", [("LaLiga EA Sports", "Betis - Sevilla", partido)]),
         ])
 
         with patch.object(bot, "_fetch_movistar_json", side_effect=movistar):
@@ -1885,13 +1886,14 @@ class BlitzBriefTests(unittest.TestCase):
         self.assertEqual(canales_pedidos, {"COD7", "COD8"})
 
     def test_baloncesto_identifica_los_canales_por_dial_no_por_nombre(self):
-        hoy = datetime.now(ZoneInfo("Europe/Madrid")) + timedelta(hours=3)
+        partido = (datetime.now(ZoneInfo("Europe/Madrid")) + timedelta(days=1)).replace(
+            hour=19, minute=0, second=0, microsecond=0)
         movistar = self._movistar([
             # Si Movistar renombra el canal, el dial sigue siendo el 8
             (8, "Un nombre nuevo cualquiera",
-             [("Euroliga", "Real Madrid - Baskonia", hoy)]),
+             [("Euroliga", "Real Madrid - Baskonia", partido)]),
             # Y un "Vamos" en otro dial no es el que se ve en casa
-            (53, "Vamos 3", [("Euroliga", "Zalgiris - Efes", hoy)]),
+            (53, "Vamos 3", [("Euroliga", "Zalgiris - Efes", partido)]),
         ])
 
         with patch.object(bot, "_fetch_movistar_json", side_effect=movistar):
@@ -1917,12 +1919,13 @@ class BlitzBriefTests(unittest.TestCase):
                          "ACB")
 
     def test_baloncesto_ignora_previas_y_resumenes(self):
-        hoy = datetime.now(ZoneInfo("Europe/Madrid")) + timedelta(hours=2)
+        partido = (datetime.now(ZoneInfo("Europe/Madrid")) + timedelta(days=1)).replace(
+            hour=19, minute=0, second=0, microsecond=0)
         movistar = self._movistar([
             (8, "Vamos", [
-                ("Euroliga", "Previa Real Madrid - Olympiacos", hoy),
-                ("Resumen Euroliga", "", hoy + timedelta(hours=3)),
-                ("Euroliga", "Real Madrid - Olympiacos", hoy + timedelta(hours=1)),
+                ("Euroliga", "Previa Real Madrid - Olympiacos", partido),
+                ("Resumen Euroliga", "", partido + timedelta(hours=3)),
+                ("Euroliga", "Real Madrid - Olympiacos", partido + timedelta(hours=1)),
             ]),
         ])
 
@@ -1931,6 +1934,29 @@ class BlitzBriefTests(unittest.TestCase):
 
         self.assertEqual(len(lines), 1)
         self.assertIn("Real Madrid - Olympiacos", lines[0])
+
+    def test_baloncesto_por_la_manana_se_da_por_diferido(self):
+        manana = datetime.now(ZoneInfo("Europe/Madrid")) + timedelta(days=1)
+        a_las = lambda h, m=0: manana.replace(  # noqa: E731
+            hour=h, minute=m, second=0, microsecond=0)
+        movistar = self._movistar([
+            (8, "Vamos", [
+                # Caso real: reemisión de un partido de entre semana
+                ("Euroliga de baloncesto", "ASVEL - Baskonia", a_las(9, 50)),
+                ("Euroliga de baloncesto", "Justo antes", a_las(11, 59)),
+                ("Liga Endesa", "Justo a mediodía", a_las(12)),
+                ("Liga Endesa", "Basquet Coruña - La Laguna Tenerife",
+                 a_las(20, 51)),
+            ]),
+        ])
+
+        with patch.object(bot, "_fetch_movistar_json", side_effect=movistar):
+            juntos = " | ".join(bot.fetch_basic_basketball())
+
+        self.assertNotIn("ASVEL", juntos)
+        self.assertNotIn("Justo antes", juntos)
+        self.assertIn("Justo a mediodía", juntos, "las 12:00 en punto sí entran")
+        self.assertIn("Basquet Coruña", juntos)
 
     def test_baloncesto_descarta_lo_que_cae_fuera_de_la_ventana(self):
         lejos = datetime.now(ZoneInfo("Europe/Madrid")) + timedelta(days=5)
@@ -1955,7 +1981,8 @@ class BlitzBriefTests(unittest.TestCase):
                     self.assertEqual(bot.fetch_basic_basketball(), [])
 
         # La parrilla trae un programa sin hora: se salta y sigue
-        hoy = datetime.now(ZoneInfo("Europe/Madrid")) + timedelta(hours=2)
+        partido = (datetime.now(ZoneInfo("Europe/Madrid")) + timedelta(days=1)).replace(
+            hour=19, minute=0, second=0, microsecond=0)
 
         def parrilla_con_hueco(path, **params):
             if path == "contents/channels":
@@ -1963,7 +1990,7 @@ class BlitzBriefTests(unittest.TestCase):
             return [
                 {"Titulo": "Euroliga", "TituloEpisodio": "Sin hora"},
                 {"Titulo": "Euroliga", "TituloEpisodio": "Real Madrid - Baskonia",
-                 "FechaHoraInicio": int(hoy.timestamp() * 1000)},
+                 "FechaHoraInicio": int(partido.timestamp() * 1000)},
             ]
 
         with patch.object(bot, "_fetch_movistar_json",
